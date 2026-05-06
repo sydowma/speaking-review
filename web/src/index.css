@@ -1,0 +1,20 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-user: #2563eb;
+  --color-teacher: #9333ea;
+  --color-critical: #ef4444;
+  --color-moderate: #f59e0b;
+  --color-minor: #10b981;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
+  transition: background-color 150ms ease, color 150ms ease;
+}

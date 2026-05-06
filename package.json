@@ -1,0 +1,22 @@
+{
+  "name": "speaking-review",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "shared",
+    "cli",
+    "web",
+    "server"
+  ],
+  "scripts": {
+    "ingest": "bun run --cwd cli src/index.ts ingest",
+    "list": "bun run --cwd cli src/index.ts list",
+    "sync": "bun run --cwd cli src/index.ts sync",
+    "dev:server": "bun run --cwd server dev",
+    "dev:web": "bun run --cwd web dev",
+    "dev": "bun run --cwd server src/index.ts & bun run --cwd web dev",
+    "build:web": "bun run --cwd web build",
+    "start": "bun run --cwd server start"
+  }
+}

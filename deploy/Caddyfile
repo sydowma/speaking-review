@@ -1,0 +1,23 @@
+# Drop this in /etc/caddy/Caddyfile (or include from your existing one) and
+# replace `speaking-review.example.com` with your real domain. Caddy auto-
+# provisions an HTTPS cert from Let's Encrypt on first request.
+
+speaking-review.example.com {
+	encode gzip zstd
+
+	# Stream large audio files efficiently and let the upstream handle
+	# range requests (Bun supports them).
+	reverse_proxy localhost:3000 {
+		flush_interval -1
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+	}
+
+	# Hide server header for very modest hardening.
+	header -Server
+
+	log {
+		output file /var/log/caddy/speaking-review.log
+		format json
+	}
+}

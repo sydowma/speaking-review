@@ -1,0 +1,36 @@
+[Unit]
+Description=Speaking Review server
+After=network.target
+
+[Service]
+Type=simple
+User=speaking-review
+WorkingDirectory=/opt/speaking-review
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HOST=127.0.0.1
+Environment=SPEAKING_REVIEW_DATA=/var/lib/speaking-review
+Environment=SPEAKING_REVIEW_DIST=/opt/speaking-review/web/dist
+# Set this in /etc/speaking-review.env (referenced via EnvironmentFile) so it
+# isn't readable in `systemctl show`.
+EnvironmentFile=-/etc/speaking-review.env
+ExecStart=/usr/local/bin/bun run --cwd server src/index.ts
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/speaking-review
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

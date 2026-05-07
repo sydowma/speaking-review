@@ -17,6 +17,11 @@
     "dev:web": "bun run --cwd web dev",
     "dev": "bun run --cwd server src/index.ts & bun run --cwd web dev",
     "build:web": "bun run --cwd web build",
-    "start": "bun run --cwd server start"
+    "start": "bun run --cwd server start",
+    "lint": "biome check .",
+    "format": "biome check --write ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.14"
   }
 }

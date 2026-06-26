@@ -70,7 +70,7 @@ See [`deploy/README.md`](deploy/README.md) for VPS deployment with Docker or sys
 
 ## Roadmap
 
-- Cambly lesson-history import: see [`docs/cambly-import.md`](docs/cambly-import.md) for the planned browser-assisted downloader and automatic analysis workflow.
+- Experimental Cambly lesson-history import: see [`docs/cambly-import.md`](docs/cambly-import.md) for the browser-assisted downloader and automatic analysis workflow.
 
 ## Privacy Notes
 

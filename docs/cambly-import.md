@@ -1,6 +1,6 @@
-# Cambly Lesson Import Design
+# Cambly Lesson Import
 
-This document describes the planned workflow for importing Cambly lesson recordings into Speaking Review.
+This document describes the experimental workflow for importing Cambly lesson recordings into Speaking Review.
 
 ## Goal
 
@@ -18,6 +18,25 @@ speaking-review cambly fetch --limit 10 --analyze
 ```
 
 The importer should download the user's own Cambly lesson recordings, save them outside the repository, and pass each video into the existing `ingest()` pipeline.
+
+## Current Status
+
+Implemented:
+
+- `speaking-review cambly login`
+- `speaking-review cambly list --limit 20`
+- `speaking-review cambly fetch --limit 10 --no-analyze`
+- `speaking-review cambly fetch --limit 10 --analyze`
+- `speaking-review cambly analyze-missing`
+- Persistent browser profile under `~/.speaking-review/browser/cambly/`
+- Download state under `~/.speaking-review/imports/cambly/state.json`
+- Optional Cambly provider metadata on `ReviewMeta`
+
+Still intentionally browser-assisted:
+
+- `login` requires the user to log in normally in the opened browser.
+- `fetch` without `--url` captures downloads after the user clicks Cambly's visible Download button.
+- `fetch --url <lesson-url>` tries to open the lesson page and click the first visible Download button, but Cambly DOM changes may require selector tuning.
 
 ## Constraints
 

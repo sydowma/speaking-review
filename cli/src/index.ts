@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { cambly } from "./commands/cambly.ts";
 import { ingest, resume } from "./commands/ingest.ts";
 import { list } from "./commands/list.ts";
 import { serve } from "./commands/serve.ts";
@@ -36,6 +37,9 @@ async function main(): Promise<void> {
       await sync(opts.id, { to: opts.to, token: opts.token });
       return;
     }
+    case "cambly":
+      await cambly(rest);
+      return;
     case "list":
       await list();
       return;
@@ -61,6 +65,7 @@ function printHelp(): void {
 Commands:
   ingest <file>           Process a video/audio file (ffmpeg → whisper → Claude)
   resume <id>             Re-run analysis on an existing review (skips whisper)
+  cambly <subcommand>     Import Cambly lesson recordings from a local browser session
   sync <id> --to <url>    Upload an existing review to a remote server
   list                    List all reviews
   serve                   Start the web UI (Vite dev server)

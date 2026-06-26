@@ -12,7 +12,15 @@ import { SCHEMA_VERSION } from "@shared/types.ts";
 
 const MODEL_TRANSCRIBE = "whisper-cpp/ggml-large-v3";
 
-export async function ingest(inputArg: string): Promise<string> {
+export interface IngestOptions {
+  sourceProvider?: ReviewMeta["sourceProvider"];
+  sourceUrl?: string;
+  externalId?: string;
+  lessonAt?: string;
+  tutorName?: string;
+}
+
+export async function ingest(inputArg: string, options: IngestOptions = {}): Promise<string> {
   const sourcePath = resolve(inputArg);
   const id = randomUUID();
   const dir = await ensureReviewDir(id);
@@ -33,6 +41,11 @@ export async function ingest(inputArg: string): Promise<string> {
     createdAt: new Date().toISOString(),
     sourcePath,
     sourceFilename: basename(sourcePath),
+    sourceProvider: options.sourceProvider ?? "local",
+    sourceUrl: options.sourceUrl,
+    externalId: options.externalId,
+    lessonAt: options.lessonAt,
+    tutorName: options.tutorName,
     durationSec,
     audioFile,
     modelTranscribe: MODEL_TRANSCRIBE,

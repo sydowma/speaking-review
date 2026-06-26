@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { mkdir, readdir, readFile, writeFile, stat } from "node:fs/promises";
 import type { ReviewAnalysis, ReviewMeta } from "@shared/types.ts";
 
-export const ROOT = join(homedir(), ".speaking-review");
+export const ROOT = process.env.SPEAKING_REVIEW_DATA ?? join(homedir(), ".speaking-review");
 export const REVIEWS_DIR = join(ROOT, "reviews");
 
 export function reviewDir(id: string): string {

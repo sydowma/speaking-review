@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.93.0",
-    "@speaking-review/shared": "workspace:*"
+    "@speaking-review/shared": "workspace:*",
+    "playwright": "^1.61.1"
   },
   "devDependencies": {
     "@types/bun": "latest"

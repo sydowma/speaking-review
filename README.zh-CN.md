@@ -72,7 +72,7 @@ review 数据默认保存在 `~/.speaking-review/reviews/<uuid>/`。如果设置
 
 ## Roadmap
 
-- Cambly 历史课程导入：计划实现浏览器辅助下载和自动分析流程，设计见 [`docs/cambly-import.md`](docs/cambly-import.md)。
+- 实验性的 Cambly 历史课程导入：浏览器辅助下载和自动分析流程见 [`docs/cambly-import.md`](docs/cambly-import.md)。
 
 ## 隐私说明
 

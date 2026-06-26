@@ -68,6 +68,10 @@ Reviews are stored at `~/.speaking-review/reviews/<uuid>/` (or `$SPEAKING_REVIEW
 
 See [`deploy/README.md`](deploy/README.md) for VPS deployment with Docker or systemd, Caddy reverse proxy, and `speaking-review sync` to push reviews from your Mac to the deployed server.
 
+## Roadmap
+
+- Cambly lesson-history import: see [`docs/cambly-import.md`](docs/cambly-import.md) for the planned browser-assisted downloader and automatic analysis workflow.
+
 ## Privacy Notes
 
 - Raw recordings, transcripts, and analysis files are stored outside the repository by default.

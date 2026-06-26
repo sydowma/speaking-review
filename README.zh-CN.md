@@ -70,6 +70,10 @@ review 数据默认保存在 `~/.speaking-review/reviews/<uuid>/`。如果设置
 
 本地完成 ingest 后，可以用 `speaking-review sync` 将 review 上传到远端 server。
 
+## Roadmap
+
+- Cambly 历史课程导入：计划实现浏览器辅助下载和自动分析流程，设计见 [`docs/cambly-import.md`](docs/cambly-import.md)。
+
 ## 隐私说明
 
 - 原始录音、转写文本和分析结果默认存放在仓库外部。

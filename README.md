@@ -1,5 +1,9 @@
 # Speaking Review - AI English Speaking Review Tool
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
+![Speaking Review AI English speaking feedback dashboard](docs/images/speaking-review-hero.png)
+
 Speaking Review is a self-hosted AI English speaking feedback tool for reviewing recorded practice sessions, IELTS speaking drills, Cambly lessons, and mock interviews. It transcribes audio with whisper.cpp, analyzes speaking issues with Claude, and gives you an interactive review UI with synchronized audio, transcript, correction suggestions, native TTS, and flashcard-style practice.
 
 It is designed for learners who want a private, local-first workflow for improving spoken English without uploading raw review data to a hosted SaaS product.

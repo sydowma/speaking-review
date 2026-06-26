@@ -1,6 +1,7 @@
 {
   "name": "@speaking-review/shared",
   "version": "0.1.0",
+  "description": "Shared TypeScript contracts for the Speaking Review AI English speaking feedback monorepo.",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",

@@ -1,6 +1,7 @@
 {
   "name": "@speaking-review/cli",
   "version": "0.1.0",
+  "description": "CLI pipeline for ingesting English speaking recordings with ffmpeg, whisper.cpp, and Claude analysis.",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",

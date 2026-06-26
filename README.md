@@ -1,6 +1,26 @@
-# speaking-review
+# Speaking Review - AI English Speaking Review Tool
 
-Local tool for reviewing English speaking practice recordings (Cambly, mock interviews, etc.). Transcribes via whisper.cpp, analyzes with Claude, presents an interactive review UI with synchronized audio + transcript + issue feedback + native TTS for corrections + a flashcard-style practice mode.
+Speaking Review is a self-hosted AI English speaking feedback tool for reviewing recorded practice sessions, IELTS speaking drills, Cambly lessons, and mock interviews. It transcribes audio with whisper.cpp, analyzes speaking issues with Claude, and gives you an interactive review UI with synchronized audio, transcript, correction suggestions, native TTS, and flashcard-style practice.
+
+It is designed for learners who want a private, local-first workflow for improving spoken English without uploading raw review data to a hosted SaaS product.
+
+## Features
+
+- **AI speaking feedback**: grammar, vocabulary, fluency, coherence, filler words, and phrase-level corrections.
+- **Speech-to-text transcription**: local whisper.cpp pipeline for turning practice recordings into timestamped transcript segments.
+- **Interactive review UI**: waveform playback, synchronized transcript, issue navigation, and correction cards.
+- **Targeted practice mode**: replay corrections with native browser text-to-speech and track review progress.
+- **Local-first storage**: review data stays under `~/.speaking-review/reviews/<uuid>/` unless you configure a different data directory.
+- **Self-hosted sharing**: optional Bun server deployment for reviewing recordings across devices.
+
+## Use Cases
+
+- IELTS speaking practice review
+- English mock interview feedback
+- Cambly or online tutor lesson review
+- Spoken English fluency analysis
+- Local AI language-learning workflow
+- Self-hosted speech review dashboard
 
 ## Architecture
 
@@ -9,7 +29,14 @@ Local tool for reviewing English speaking practice recordings (Cambly, mock inte
 - **`server/`** — Bun HTTP server: serves API + static SPA. Runs locally in dev, deployable to a VPS for cross-device use.
 - **`web/`** — Vite + React UI: waveform, transcript, issues, practice mode.
 
-Reviews are stored at `~/.speaking-review/reviews/<uuid>/` (or `$SPEAKING_REVIEW_DATA` if set).
+## Tech Stack
+
+- Bun + TypeScript monorepo
+- whisper.cpp for local speech recognition
+- Claude via Anthropic API for speaking analysis
+- React + Vite web app
+- Bun HTTP server for API and static hosting
+- ffmpeg for audio extraction
 
 ## Prerequisites
 
@@ -22,7 +49,7 @@ curl -L -o ~/whisper-models/ggml-large-v3.bin \
 export ANTHROPIC_API_KEY="your-anthropic-api-key"
 ```
 
-## Local usage
+## Local Usage
 
 ```bash
 bun install
@@ -31,10 +58,18 @@ bun run dev                              # starts server + web in parallel
 # open http://localhost:5173
 ```
 
-## Cross-device / deployment
+Reviews are stored at `~/.speaking-review/reviews/<uuid>/` (or `$SPEAKING_REVIEW_DATA` if set).
+
+## Cross-Device Deployment
 
 See [`deploy/README.md`](deploy/README.md) for VPS deployment with Docker or systemd, Caddy reverse proxy, and `speaking-review sync` to push reviews from your Mac to the deployed server.
 
+## Privacy Notes
+
+- Raw recordings, transcripts, and analysis files are stored outside the repository by default.
+- The server only protects remote access when `SPEAKING_REVIEW_TOKEN` is configured.
+- Do not commit generated review data, audio files, transcripts, or local environment files.
+
 ## License
 
-Apache-2.0
+Apache-2.0. See [`LICENSE`](LICENSE).

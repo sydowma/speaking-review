@@ -1,6 +1,7 @@
 {
   "name": "@speaking-review/web",
   "version": "0.1.0",
+  "description": "React review UI for synchronized audio, transcript, AI speaking feedback, and correction practice.",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",

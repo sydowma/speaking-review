@@ -1,6 +1,7 @@
 {
   "name": "@speaking-review/server",
   "version": "0.1.0",
+  "description": "Bun API and static server for the self-hosted Speaking Review web app.",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",

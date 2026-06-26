@@ -19,7 +19,7 @@ brew install ffmpeg whisper-cpp bun
 mkdir -p ~/whisper-models
 curl -L -o ~/whisper-models/ggml-large-v3.bin \
   https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin
-export ANTHROPIC_API_KEY=sk-ant-...
+export ANTHROPIC_API_KEY="your-anthropic-api-key"
 ```
 
 ## Local usage
@@ -34,3 +34,7 @@ bun run dev                              # starts server + web in parallel
 ## Cross-device / deployment
 
 See [`deploy/README.md`](deploy/README.md) for VPS deployment with Docker or systemd, Caddy reverse proxy, and `speaking-review sync` to push reviews from your Mac to the deployed server.
+
+## License
+
+Apache-2.0

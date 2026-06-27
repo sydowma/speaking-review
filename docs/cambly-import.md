@@ -37,7 +37,7 @@ Implemented:
 Still intentionally browser-assisted:
 
 - `login` requires the user to log in normally in the opened browser.
-- `fetch` without `--url` captures downloads after the user clicks Cambly's visible Download button.
+- `fetch` without `--url` first asks the logged-in browser session for Cambly's downloadable chat-video list, newest first, then resolves the official video endpoint and saves the video locally.
 - `fetch --url <lesson-url>` tries to open the lesson page and click the first visible Download button, but Cambly DOM changes may require selector tuning.
 
 ## Constraints
@@ -71,7 +71,7 @@ speaking-review cambly list --opencli-session cambly --limit 20
 speaking-review cambly fetch --opencli-session cambly --limit 10 --no-analyze
 ```
 
-In this mode, `speaking-review` delegates browser actions to `opencli browser <session> ...`. The OpenCLI extension runs inside the existing Chrome profile, so Cambly sees the same logged-in session. `fetch` waits for Chrome download events and then copies the completed video file into `~/.speaking-review/imports/cambly/videos/`.
+In this mode, `speaking-review` delegates browser actions to `opencli browser <session> ...`. The OpenCLI extension runs inside the existing Chrome profile, so Cambly sees the same logged-in session. `fetch` runs an authenticated browser-side request against Cambly's chat-video API, keeps only entries with `hasVideoUrl`, sorts them by lesson time descending, opens the official `/api/chats/<id>/video` endpoint, resolves the playable video source, and saves it into `~/.speaking-review/imports/cambly/videos/`. If the API does not return downloadable candidates, the command falls back to the browser-assisted download capture flow. Signed video URLs are used only in memory and are not printed.
 
 Useful OpenCLI options:
 

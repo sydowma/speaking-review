@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { createWriteStream, existsSync } from "node:fs";
 import { copyFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import type { BrowserContext, Download, Page } from "playwright";
 import {
   closeCamblyBrowser,
@@ -11,10 +13,16 @@ import {
   openCamblyBrowser,
 } from "../importers/cambly/browser.ts";
 import {
+  clickCamblyVideoEndpointWithOpenCli,
   clickDownloadWithOpenCli,
+  listCamblyDownloadableVideosWithOpenCli,
   listCamblyLinksWithOpenCli,
+  listRecentCamblyChatIdsWithOpenCli,
   type OpenCliDownloadResult,
+  type OpenCliResolvedVideo,
   openCamblyWithOpenCli,
+  resetCamblyHistoryScrollWithOpenCli,
+  resolveCamblyVideoWithOpenCli,
   usesOpenCli,
   waitForOpenCliDownload,
 } from "../importers/cambly/opencli.ts";
@@ -206,7 +214,8 @@ async function camblyFetchOpenCli(options: FetchOptions): Promise<void> {
       return;
     }
 
-    await captureManualDownloadsOpenCli(state, options);
+    const processed = await fetchApiVideosOpenCli(state, options);
+    if (processed === 0) await captureManualDownloadsOpenCli(state, options);
   } finally {
     await writeCamblyState(state);
   }
@@ -266,11 +275,30 @@ async function fetchExplicitUrlsOpenCli(
     const downloadPromise = settleDownloadWaiter(waiter.promise);
     const click = await clickDownloadWithOpenCli(options);
     if (!click.clicked) {
+      const video = await tryResolveOpenCliVideo(options);
+      if (video) {
+        waiter.cancel();
+        await downloadPromise;
+        await saveAndMaybeAnalyzeOpenCliVideo(video, state, options);
+        processed += 1;
+        continue;
+      }
+
       waiter.cancel();
       await downloadPromise;
       const message = "Could not find a visible Download button on the OpenCLI browser page.";
       if (options.strict) throw new Error(message);
       console.error(`[cambly] ${message}`);
+      continue;
+    }
+
+    await delay(1_000);
+    const video = await tryResolveOpenCliVideo(options);
+    if (video) {
+      waiter.cancel();
+      await downloadPromise;
+      await saveAndMaybeAnalyzeOpenCliVideo(video, state, options);
+      processed += 1;
       continue;
     }
 
@@ -286,6 +314,51 @@ async function fetchExplicitUrlsOpenCli(
   }
 
   console.error(`[cambly] Processed ${processed} lesson URL(s).`);
+}
+
+async function fetchApiVideosOpenCli(
+  state: CamblyImportState,
+  options: FetchOptions,
+): Promise<number> {
+  await openCamblyWithOpenCli(withCacheBust(options.url), options);
+  await delay(2_000);
+
+  const candidates = await listCamblyDownloadableVideosWithOpenCli(options, options.limit);
+  if (candidates.length === 0) {
+    console.error("[cambly] No downloadable Cambly chat videos found through the API.");
+    return 0;
+  }
+
+  let processed = 0;
+  for (const candidate of candidates) {
+    if (processed >= options.limit) break;
+
+    console.error(`[cambly] ${candidate.chatId}: resolving latest downloadable video...`);
+    await openCamblyWithOpenCli(candidate.lessonUrl, options);
+    await delay(1_500);
+
+    const resolved = await tryResolveOpenCliVideo(options);
+    if (!resolved) {
+      const message = `Could not resolve video source for Cambly chat ${candidate.chatId}.`;
+      if (options.strict) throw new Error(message);
+      console.error(`[cambly] ${message}`);
+      continue;
+    }
+
+    await saveAndMaybeAnalyzeOpenCliVideo(
+      {
+        url: resolved.url,
+        suggestedFilename: candidate.suggestedFilename,
+        lessonUrl: candidate.lessonUrl,
+      },
+      state,
+      options,
+    );
+    processed += 1;
+  }
+
+  console.error(`[cambly] Processed ${processed} Cambly API video(s).`);
+  return processed;
 }
 
 async function captureManualDownloads(
@@ -327,23 +400,50 @@ async function captureManualDownloadsOpenCli(
   state: CamblyImportState,
   options: FetchOptions,
 ): Promise<void> {
-  await openCamblyWithOpenCli(options.url, options);
+  await openCamblyWithOpenCli(withCacheBust(options.url), options);
+  await delay(3_000);
+  await resetCamblyHistoryScrollWithOpenCli(options).catch(() => undefined);
+  await delay(1_000);
   console.error("[cambly] Cambly is open through OpenCLI Browser Bridge.");
   console.error(
-    "[cambly] Open Progress / Lesson History in Chrome and click one Download at a time.",
+    "[cambly] Open Progress / Lesson History in Chrome, then open one lesson detail at a time.",
   );
   console.error(`[cambly] Capturing up to ${options.limit} download(s).`);
 
   let accepted = 0;
+  const attemptedChatIds = new Set<string>();
   for (let i = 0; i < options.limit; i++) {
     const waiter = waitForOpenCliDownload(options);
     const downloadPromise = settleDownloadWaiter(waiter.promise);
-    await waitForEnter(`[cambly] Click Download for lesson ${i + 1}, then press Enter here...`);
+    await waitForEnter(
+      `[cambly] Open lesson ${i + 1}, click Download if needed, then press Enter here...`,
+    );
 
     try {
+      const video = await tryResolveOpenCliVideo(options);
+      if (video) {
+        waiter.cancel();
+        await downloadPromise;
+        await saveAndMaybeAnalyzeOpenCliVideo(video, state, options);
+        accepted += 1;
+        continue;
+      }
+
+      const earlyDownload = await waitForSettledDownload(downloadPromise, 500);
+      if (earlyDownload) {
+        if (!earlyDownload.ok) throw earlyDownload.error;
+        await saveAndMaybeAnalyzeOpenCliDownload(earlyDownload.value, undefined, state, options);
+        accepted += 1;
+        continue;
+      }
+
+      const chatId = await tryClickRecentCamblyVideoEndpoint(options, attemptedChatIds);
+      const lessonUrl = chatId
+        ? sanitizeCamblyUrl(`https://www.cambly.com/api/chats/${chatId}/video`)
+        : undefined;
       const download = await downloadPromise;
       if (!download.ok) throw download.error;
-      await saveAndMaybeAnalyzeOpenCliDownload(download.value, undefined, state, options);
+      await saveAndMaybeAnalyzeOpenCliDownload(download.value, lessonUrl, state, options);
       accepted += 1;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -387,6 +487,54 @@ async function settleDownloadWaiter(
   }
 }
 
+async function tryResolveOpenCliVideo(
+  options: FetchOptions,
+): Promise<OpenCliResolvedVideo | undefined> {
+  try {
+    return await resolveCamblyVideoWithOpenCli(options);
+  } catch {
+    return undefined;
+  }
+}
+
+async function waitForSettledDownload(
+  promise: Promise<{ ok: true; value: OpenCliDownloadResult } | { ok: false; error: Error }>,
+  timeoutMs: number,
+): Promise<{ ok: true; value: OpenCliDownloadResult } | { ok: false; error: Error } | undefined> {
+  return await Promise.race([promise, delay(timeoutMs).then(() => undefined)]);
+}
+
+async function tryClickRecentCamblyVideoEndpoint(
+  options: FetchOptions,
+  attemptedChatIds: Set<string>,
+): Promise<string | undefined> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) {
+      await openCamblyWithOpenCli(withCacheBust(options.url), options);
+      await delay(3_000);
+      await resetCamblyHistoryScrollWithOpenCli(options).catch(() => undefined);
+      await delay(1_000);
+    }
+
+    let chatIds: string[];
+    try {
+      chatIds = await listRecentCamblyChatIdsWithOpenCli(options);
+    } catch {
+      chatIds = [];
+    }
+
+    const chatId = chatIds.find((id) => !attemptedChatIds.has(id));
+    if (!chatId) continue;
+    attemptedChatIds.add(chatId);
+
+    try {
+      const click = await clickCamblyVideoEndpointWithOpenCli(chatId, options);
+      if (click.clicked) return chatId;
+    } catch {}
+  }
+  return undefined;
+}
+
 async function saveAndMaybeAnalyzeOpenCliDownload(
   download: OpenCliDownloadResult,
   lessonUrl: string | undefined,
@@ -408,6 +556,23 @@ async function saveAndMaybeAnalyzeOpenCliDownload(
       lessonUrl,
       downloadUrl: download.finalUrl ?? download.url ?? sourcePath,
       saveAs: (targetPath) => copyFile(sourcePath, targetPath),
+    },
+    state,
+    options,
+  );
+}
+
+async function saveAndMaybeAnalyzeOpenCliVideo(
+  video: OpenCliResolvedVideo,
+  state: CamblyImportState,
+  options: FetchOptions,
+): Promise<void> {
+  await saveAndMaybeAnalyzeFile(
+    {
+      suggestedFilename: video.suggestedFilename,
+      lessonUrl: sanitizeCamblyUrl(video.lessonUrl ?? ""),
+      downloadUrl: video.url,
+      saveAs: (targetPath) => downloadRemoteFile(video.url, targetPath),
     },
     state,
     options,
@@ -465,6 +630,25 @@ async function saveAndMaybeAnalyzeFile(
   if (options.analyze) {
     await analyzeExistingLesson(lessonId, state, options);
   }
+}
+
+async function downloadRemoteFile(url: string, targetPath: string): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(url);
+  } catch {
+    throw new Error("Video download request failed.");
+  }
+
+  if (!response.ok) {
+    throw new Error(`Video download failed with HTTP ${response.status}.`);
+  }
+  if (!response.body) {
+    throw new Error("Video download returned no body.");
+  }
+
+  const body = response.body as unknown as Parameters<typeof Readable.fromWeb>[0];
+  await pipeline(Readable.fromWeb(body), createWriteStream(targetPath));
 }
 
 async function analyzeExistingLesson(
@@ -537,13 +721,15 @@ function buildLessonId(
   filename: string,
   downloadUrl: string,
 ): string {
+  const chatId = [lessonUrl, filename, downloadUrl]
+    .filter(isString)
+    .map(extractCamblyChatId)
+    .find(isString);
+  if (chatId) return safeName(chatId);
+
   if (lessonUrl) {
     const url = new URL(lessonUrl);
-    const pathId = url.pathname
-      .split("/")
-      .filter(Boolean)
-      .reverse()
-      .find((part) => /^[a-z0-9][a-z0-9-]{5,}$/i.test(part));
+    const pathId = url.pathname.split("/").filter(Boolean).reverse().find(isLikelyCamblyLessonId);
     if (pathId) return safeName(pathId);
   }
 
@@ -552,6 +738,50 @@ function buildLessonId(
     .digest("hex")
     .slice(0, 16);
   return `cambly-${hash}`;
+}
+
+function extractCamblyChatId(value: string): string | undefined {
+  try {
+    const url = new URL(value);
+    const queryId = url.searchParams.get("chatId");
+    if (queryId && /^[a-f0-9]{24}$/i.test(queryId)) return queryId;
+
+    const pathId = url.pathname.match(/\/api\/chats\/([a-f0-9]{24})\/video/i)?.[1];
+    if (pathId) return pathId;
+  } catch {
+    const filenameId = value.match(/(?:^|_)cambly_([a-f0-9]{24})(?:_|\.|$)/i)?.[1];
+    if (filenameId) return filenameId;
+  }
+
+  return undefined;
+}
+
+function isLikelyCamblyLessonId(part: string): boolean {
+  if (!/^[a-z0-9][a-z0-9-]{5,}$/i.test(part)) return false;
+  const normalized = safeName(part);
+  if (
+    new Set([
+      "account",
+      "api",
+      "chats",
+      "download",
+      "history",
+      "lesson",
+      "lessons",
+      "past-lessons",
+      "progress",
+      "recording",
+      "student",
+      "video",
+    ]).has(normalized)
+  ) {
+    return false;
+  }
+  return /^[a-f0-9]{12,}$/i.test(part) || /\d/.test(part) || part.length >= 16;
+}
+
+function isString(value: string | undefined): value is string {
+  return typeof value === "string" && value.length > 0;
 }
 
 function sanitizeCamblyUrl(value: string): string | undefined {
@@ -706,6 +936,20 @@ function readOptionalPositiveInt(value: string | undefined, flag: string): numbe
   return parsePositiveInt(value, flag);
 }
 
+function withCacheBust(value: string): string {
+  try {
+    const url = new URL(value);
+    url.searchParams.set("srImport", String(Date.now()));
+    return url.toString();
+  } catch {
+    return value;
+  }
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function waitForEnter(prompt: string): Promise<void> {
   const rl = createInterface({ input, output });
   try {
@@ -721,7 +965,7 @@ function printCamblyHelp(): void {
 Commands:
   cambly login                         Open a persistent Cambly browser profile
   cambly list [--limit 20]             Print lesson-like links from the current history page
-  cambly fetch [options]               Capture lesson video downloads and optionally analyze them
+  cambly fetch [options]               Download lesson videos and optionally analyze them
   cambly analyze-missing [options]     Analyze downloaded lessons without an analysis file
 
 Fetch options:

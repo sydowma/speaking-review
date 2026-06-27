@@ -1,14 +1,13 @@
-import { basename, resolve } from "node:path";
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
-import { ensureReviewDir, reviewDir, writeMeta, writeAnalysis, readMeta } from "../storage.ts";
-import { extractAudio } from "../pipeline/ffmpeg.ts";
-import { transcribe, readCachedTranscription } from "../pipeline/whisper.ts";
-import { analyze } from "../pipeline/analyze.ts";
+import { basename, join, resolve } from "node:path";
 import type { ReviewMeta } from "@shared/types.ts";
 import { SCHEMA_VERSION } from "@shared/types.ts";
+import { analyze } from "../pipeline/analyze.ts";
+import { extractAudio } from "../pipeline/ffmpeg.ts";
+import { readCachedTranscription, transcribe } from "../pipeline/whisper.ts";
+import { ensureReviewDir, readMeta, reviewDir, writeAnalysis, writeMeta } from "../storage.ts";
 
 const MODEL_TRANSCRIBE = "whisper-cpp/ggml-large-v3";
 
@@ -61,14 +60,14 @@ export async function ingest(inputArg: string, options: IngestOptions = {}): Pro
 
   log(`[ingest ${id}] analyzing with Claude…`);
   const t2 = Date.now();
-  const { title, transcript, issues, summary } = await analyze(segments);
+  const { title, transcript, issues, summary, coaching } = await analyze(segments);
   log(`[ingest ${id}] analyzed (${issues.length} issues) in ${ms(t2)}`);
 
   if (title) {
     meta.title = title;
     await writeMeta(meta);
   }
-  await writeAnalysis({ meta, transcript, issues, summary });
+  await writeAnalysis({ meta, transcript, issues, summary, coaching });
 
   log(`[ingest ${id}] done → ~/.speaking-review/reviews/${id}/`);
   return id;
@@ -106,14 +105,14 @@ export async function resume(id: string): Promise<void> {
 
   log(`[resume ${id}] analyzing with Claude…`);
   const t = Date.now();
-  const { title, transcript, issues, summary } = await analyze(segments);
+  const { title, transcript, issues, summary, coaching } = await analyze(segments);
   log(`[resume ${id}] analyzed (${issues.length} issues) in ${ms(t)}`);
 
   if (title) {
     meta.title = title;
     await writeMeta(meta);
   }
-  await writeAnalysis({ meta, transcript, issues, summary });
+  await writeAnalysis({ meta, transcript, issues, summary, coaching });
   log(`[resume ${id}] done → ~/.speaking-review/reviews/${id}/`);
 }
 

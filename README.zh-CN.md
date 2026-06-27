@@ -4,7 +4,7 @@
 
 ![Speaking Review AI 英语口语反馈面板](docs/images/speaking-review-hero.png)
 
-Speaking Review 是一个本地优先、可自托管的 AI 英语口语复盘工具，适合复盘雅思口语练习、Cambly 课程、英语模拟面试和日常口语录音。它使用 whisper.cpp 在本地完成语音转文字，通过 Claude 分析口语问题，并提供带音频波形、同步文本、纠错建议、浏览器原生 TTS 和卡片练习模式的交互式 Web 界面。
+Speaking Review 是一个本地优先、可自托管的 AI 英语口语复盘工具，适合复盘雅思口语练习、Cambly 课程、英语模拟面试和日常口语录音。它使用 whisper.cpp 在本地完成语音转文字，通过 Claude 或 Codex CLI 分析口语问题，并提供带音频波形、同步文本、纠错建议、浏览器原生 TTS 和卡片练习模式的交互式 Web 界面。
 
 这个项目适合希望保护原始录音和转写数据，同时又想系统提升英语表达、流利度和面试口语表现的学习者。
 
@@ -47,7 +47,8 @@ Speaking Review 是一个本地优先、可自托管的 AI 英语口语复盘工
 
 ```bash
 bash scripts/sr setup --with-model
-export ANTHROPIC_API_KEY="your-anthropic-api-key"
+export SPEAKING_REVIEW_ANALYZER=codex
+# 或者：export ANTHROPIC_API_KEY="your-anthropic-api-key"
 ```
 
 `setup --with-model` 会安装本地工具链、执行 `bun install`、安装 Playwright Chromium，并下载默认 whisper.cpp 模型。正式处理录音前，可以先运行 `bash scripts/sr doctor` 检查环境。
@@ -74,14 +75,16 @@ bun run ui
 
 ## Cambly 导入
 
-Speaking Review 可以通过浏览器辅助流程导入你自己的 Cambly 课程录像。OpenCLI Browser Bridge 模式会复用你已经登录的 Chrome 会话，向 Cambly 请求可下载的视频列表，按课程时间从新到旧处理，解析官方视频端点，并把视频保存到仓库外部。
+Speaking Review 可以通过浏览器辅助流程导入你自己的 Cambly 课程历史。OpenCLI Browser Bridge 模式会复用你已经登录的 Chrome 会话，从 Cambly past-lessons 页面读取最新课程记录，把官方 lesson transcript 保存到仓库外部，并在没有 Anthropic key 时默认用 Codex CLI 生成复盘报告。
 
 ```bash
 opencli doctor
-bash scripts/sr cambly-fetch --limit 5
+export SPEAKING_REVIEW_ANALYZER=codex
+bash scripts/sr cambly-loop --once --date 2026-06-27
+bash scripts/sr cambly-loop --interval 15m
 ```
 
-加上 `--analyze` 后，会在下载完成后继续运行 whisper.cpp + Claude 复盘流程。签名视频 URL 只在内存中使用；本项目不会保存 Cambly 密码或 token。安装、CDP 备用方案和排障说明见 [`docs/cambly-import.md`](docs/cambly-import.md)。
+`cambly-loop` 默认开启分析，默认只检查当天课程；可以用 `--date`、`--since` 或 `--all-history` 改变时间窗口。当 Cambly 先暴露 transcript、还没有可下载视频时，会生成 transcript-only review。`cambly-fetch` 仍保留用于旧的可下载 chat video。签名视频 URL 只在内存中使用；本项目不会保存 Cambly 密码或 token。安装、CDP 备用方案和排障说明见 [`docs/cambly-import.md`](docs/cambly-import.md)。
 
 ## 跨设备部署
 

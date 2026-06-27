@@ -4,7 +4,7 @@
 
 ![Speaking Review AI English speaking feedback dashboard](docs/images/speaking-review-hero.png)
 
-Speaking Review is a self-hosted AI English speaking feedback tool for reviewing recorded practice sessions, IELTS speaking drills, Cambly lessons, and mock interviews. It transcribes audio with whisper.cpp, analyzes speaking issues with Claude, and gives you an interactive review UI with synchronized audio, transcript, correction suggestions, native TTS, and flashcard-style practice.
+Speaking Review is a self-hosted AI English speaking feedback tool for reviewing recorded practice sessions, IELTS speaking drills, Cambly lessons, and mock interviews. It transcribes audio with whisper.cpp, analyzes speaking issues with Claude or Codex CLI, and gives you an interactive review UI with synchronized audio, transcript, correction suggestions, native TTS, and flashcard-style practice.
 
 It is designed for learners who want a private, local-first workflow for improving spoken English without uploading raw review data to a hosted SaaS product.
 
@@ -47,7 +47,8 @@ It is designed for learners who want a private, local-first workflow for improvi
 
 ```bash
 bash scripts/sr setup --with-model
-export ANTHROPIC_API_KEY="your-anthropic-api-key"
+export SPEAKING_REVIEW_ANALYZER=codex
+# or: export ANTHROPIC_API_KEY="your-anthropic-api-key"
 ```
 
 `setup --with-model` installs the local toolchain, runs `bun install`, installs Playwright Chromium, and downloads the default whisper.cpp model. Run `bash scripts/sr doctor` to check the machine before ingesting recordings.
@@ -74,14 +75,16 @@ bun run ui
 
 ## Cambly Import
 
-Speaking Review can import your own downloadable Cambly lesson recordings through a browser-assisted workflow. The OpenCLI Browser Bridge path reuses your already logged-in Chrome session, asks Cambly for downloadable chat videos in newest-first order, resolves the official video endpoint, and saves videos outside the repository.
+Speaking Review can import your own Cambly lesson history through a browser-assisted workflow. The OpenCLI Browser Bridge path reuses your already logged-in Chrome session, reads Cambly's newest lesson records from the past-lessons page, saves official lesson transcripts outside the repository, and analyzes them with Codex CLI by default when no Anthropic key is configured.
 
 ```bash
 opencli doctor
-bash scripts/sr cambly-fetch --limit 5
+export SPEAKING_REVIEW_ANALYZER=codex
+bash scripts/sr cambly-loop --once --date 2026-06-27
+bash scripts/sr cambly-loop --interval 15m
 ```
 
-Add `--analyze` to run the normal whisper.cpp + Claude review pipeline after each download. Signed video URLs are kept in memory only; Cambly passwords and tokens are not stored by this project. See [`docs/cambly-import.md`](docs/cambly-import.md) for setup notes, CDP fallback, and troubleshooting.
+`cambly-loop` enables analysis by default, checks today's lessons unless you pass `--date`, `--since`, or `--all-history`, and writes transcript-only review reports when Cambly exposes transcript data before a downloadable video. `cambly-fetch` is still available for older downloadable chat videos. Signed video URLs are kept in memory only; Cambly passwords and tokens are not stored by this project. See [`docs/cambly-import.md`](docs/cambly-import.md) for setup notes, CDP fallback, and troubleshooting.
 
 ## Cross-Device Deployment
 

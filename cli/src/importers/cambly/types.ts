@@ -7,6 +7,7 @@ export interface CamblyLessonRecord {
   recordedAt?: string;
   tutorName?: string;
   downloadedVideo?: string;
+  downloadedTranscript?: string;
   reviewId?: string;
   status: CamblyLessonStatus;
   updatedAt: string;

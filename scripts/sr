@@ -23,16 +23,22 @@ Usage:
   bash scripts/sr list                      List local reviews
   bash scripts/sr cambly-login              Open Cambly through OpenCLI Browser Bridge
   bash scripts/sr cambly-fetch [options]    Download Cambly videos, newest first
+  bash scripts/sr cambly-loop [options]     Poll for new Cambly lessons and analyze them
   bash scripts/sr cambly-analyze [options]  Analyze downloaded Cambly videos
   bash scripts/sr sync <id> --to <url>      Sync a review to a remote server
 
 Common Cambly options:
-  --limit N          Defaults to 1 in this wrapper
+  --limit N          Defaults to 1 for fetch, 10 for loop
   --analyze          Run analysis after download
-  --no-analyze       Download only; default in this wrapper
+  --no-analyze       Download only; default for cambly-fetch
+  --interval 15m     Poll interval for cambly-loop
+  --date YYYY-MM-DD  For cambly-loop, process one local calendar day
+  --since YYYY-MM-DD For cambly-loop, process from that local day onward
+  --all-history      For cambly-loop, remove the default "today" window
 
 Environment:
-  ANTHROPIC_API_KEY      Required for review/analyze flows
+  ANTHROPIC_API_KEY      Optional when SPEAKING_REVIEW_ANALYZER=codex is available
+  SPEAKING_REVIEW_ANALYZER Set to codex to analyze with Codex CLI
   CAMBLY_OPENCLI_SESSION Defaults to "cambly"
   CAMBLY_HISTORY_URL     Defaults to Cambly's past-lessons page
   WHISPER_MODEL          Defaults to ~/whisper-models/ggml-large-v3.bin
@@ -79,6 +85,10 @@ main() {
       with_default_cambly_fetch_args "$@"
       exec_bun_cli cambly fetch "${DEFAULTED_ARGS[@]}"
       ;;
+    cambly-loop)
+      with_default_cambly_loop_args "$@"
+      exec_bun_cli cambly loop "${DEFAULTED_ARGS[@]}"
+      ;;
     cambly-analyze)
       with_default_opencli_args "$@"
       exec_bun_cli cambly analyze-missing "${DEFAULTED_ARGS[@]}"
@@ -123,10 +133,17 @@ setup() {
 
 doctor() {
   local failed=0
+  local codex_available=0
 
   check_command bun || failed=1
   check_command ffmpeg || failed=1
   check_command whisper-cli || failed=1
+  if command -v codex >/dev/null 2>&1; then
+    codex_available=1
+    echo "ok  codex: $(command -v codex)"
+  else
+    echo "warn codex is not installed; set ANTHROPIC_API_KEY for analysis"
+  fi
 
   if [[ -f "$DEFAULT_WHISPER_MODEL" ]]; then
     echo "ok  whisper model: $DEFAULT_WHISPER_MODEL"
@@ -138,8 +155,10 @@ doctor() {
 
   if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
     echo "ok  ANTHROPIC_API_KEY is set"
+  elif [[ "$codex_available" == "1" ]]; then
+    echo "ok  analyzer fallback: Codex CLI is available"
   else
-    echo "warn ANTHROPIC_API_KEY is not set; review/analyze commands will fail"
+    echo "warn ANTHROPIC_API_KEY is not set and Codex CLI is unavailable; review/analyze commands will fail"
   fi
 
   if command -v opencli >/dev/null 2>&1; then
@@ -216,6 +235,22 @@ with_default_cambly_fetch_args() {
   fi
   if ! has_flag "--analyze" "${DEFAULTED_ARGS[@]}" && ! has_flag "--no-analyze" "${DEFAULTED_ARGS[@]}"; then
     DEFAULTED_ARGS+=(--no-analyze)
+  fi
+}
+
+with_default_cambly_loop_args() {
+  DEFAULTED_ARGS=("$@")
+  if ! has_flag "--opencli-session" "${DEFAULTED_ARGS[@]}"; then
+    DEFAULTED_ARGS+=(--opencli-session "$DEFAULT_OPENCLI_SESSION")
+  fi
+  if ! has_flag "--history-url" "${DEFAULTED_ARGS[@]}"; then
+    DEFAULTED_ARGS+=(--history-url "$DEFAULT_CAMBLY_HISTORY_URL")
+  fi
+  if ! has_flag "--limit" "${DEFAULTED_ARGS[@]}"; then
+    DEFAULTED_ARGS+=(--limit 10)
+  fi
+  if ! has_flag "--analyze" "${DEFAULTED_ARGS[@]}" && ! has_flag "--no-analyze" "${DEFAULTED_ARGS[@]}"; then
+    DEFAULTED_ARGS+=(--analyze)
   fi
 }
 

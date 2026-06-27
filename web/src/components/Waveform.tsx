@@ -1,15 +1,9 @@
-import {
-  forwardRef,
-  useEffect,
-  useImperativeHandle,
-  useRef,
-  useState,
-} from "react";
+import type { Issue, TranscriptSegment } from "@shared/types.ts";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import WaveSurfer from "wavesurfer.js";
 import RegionsPlugin from "wavesurfer.js/dist/plugins/regions.js";
-import type { Issue, TranscriptSegment } from "@shared/types.ts";
-import { audioUrl } from "../lib/reviewApi.ts";
 import { formatTimestamp } from "../lib/format.ts";
+import { audioUrl } from "../lib/reviewApi.ts";
 import { loadPref, resolvePref, subscribe } from "../lib/theme.ts";
 
 export interface WaveformHandle {
@@ -25,6 +19,7 @@ interface Props {
   reviewId: string;
   transcript: TranscriptSegment[];
   issues: Issue[];
+  hasAudio?: boolean;
   loopSingle: boolean;
   onLoopToggle: (loop: boolean) => void;
   onSegmentEnter?: (segmentId: string) => void;
@@ -47,7 +42,16 @@ const COLORS_DARK = {
 };
 
 export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
-  { reviewId, transcript, issues, loopSingle, onLoopToggle, onSegmentEnter, onPause },
+  {
+    reviewId,
+    transcript,
+    issues,
+    hasAudio = true,
+    loopSingle,
+    onLoopToggle,
+    onSegmentEnter,
+    onPause,
+  },
   ref,
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -58,6 +62,7 @@ export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
   const [duration, setDuration] = useState(0);
 
   useEffect(() => {
+    if (!hasAudio) return;
     if (!containerRef.current) return;
 
     const initialColors = resolvePref(loadPref()) === "dark" ? COLORS_DARK : COLORS_LIGHT;
@@ -138,7 +143,7 @@ export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
       ws.destroy();
       wsRef.current = null;
     };
-  }, [reviewId, transcript, issues, onSegmentEnter, onPause]);
+  }, [reviewId, transcript, issues, hasAudio, onSegmentEnter, onPause]);
 
   useImperativeHandle(ref, () => ({
     play: () => void wsRef.current?.play(),
@@ -164,6 +169,7 @@ export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
         <button
           type="button"
           onClick={() => wsRef.current?.playPause()}
+          disabled={!hasAudio}
           className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-600 hover:bg-blue-500 text-white text-sm shadow-sm shrink-0"
           aria-label={isPlaying ? "Pause" : "Play"}
         >
@@ -172,7 +178,13 @@ export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
         <div className="text-[10px] sm:text-xs text-zinc-500 dark:text-zinc-400 tabular-nums w-14 sm:w-20 shrink-0">
           {formatTimestamp(currentTime)} / {formatTimestamp(duration)}
         </div>
-        <div ref={containerRef} className="flex-1 min-w-0" />
+        <div ref={containerRef} className="flex-1 min-w-0">
+          {!hasAudio && (
+            <div className="h-16 flex items-center text-xs text-zinc-500 dark:text-zinc-400">
+              Transcript-only review
+            </div>
+          )}
+        </div>
         <label className="flex items-center gap-1.5 text-[11px] sm:text-xs text-zinc-600 dark:text-zinc-300 select-none cursor-pointer shrink-0">
           <input
             type="checkbox"

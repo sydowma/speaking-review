@@ -1,11 +1,13 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createWriteStream, existsSync } from "node:fs";
-import { copyFile } from "node:fs/promises";
+import { copyFile, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import type { ReviewMeta } from "@shared/types.ts";
+import { SCHEMA_VERSION } from "@shared/types.ts";
 import type { BrowserContext, Download, Page } from "playwright";
 import {
   closeCamblyBrowser,
@@ -15,9 +17,13 @@ import {
 import {
   clickCamblyVideoEndpointWithOpenCli,
   clickDownloadWithOpenCli,
+  fetchCamblyLessonTranscriptWithOpenCli,
   listCamblyDownloadableVideosWithOpenCli,
+  listCamblyLessonsV2WithOpenCli,
   listCamblyLinksWithOpenCli,
   listRecentCamblyChatIdsWithOpenCli,
+  type OpenCliCamblyLessonTranscript,
+  type OpenCliCamblyLessonV2Candidate,
   type OpenCliDownloadResult,
   type OpenCliResolvedVideo,
   openCamblyWithOpenCli,
@@ -27,6 +33,7 @@ import {
   waitForOpenCliDownload,
 } from "../importers/cambly/opencli.ts";
 import {
+  CAMBLY_TRANSCRIPTS_DIR,
   CAMBLY_VIDEOS_DIR,
   ensureCamblyImportDirs,
   readCamblyState,
@@ -34,7 +41,9 @@ import {
   writeCamblyState,
 } from "../importers/cambly/state.ts";
 import type { CamblyImportState } from "../importers/cambly/types.ts";
-import { reviewDir } from "../storage.ts";
+import { analyze } from "../pipeline/analyze.ts";
+import type { WhisperSegment } from "../pipeline/whisper.ts";
+import { ensureReviewDir, reviewDir, writeAnalysis, writeMeta } from "../storage.ts";
 import { ingest } from "./ingest.ts";
 
 interface LoginOptions {
@@ -65,6 +74,13 @@ interface FetchOptions {
   downloadTimeoutMs?: number;
 }
 
+interface LoopOptions extends FetchOptions {
+  intervalMs: number;
+  maxRuns?: number;
+  sinceMs?: number;
+  untilMs?: number;
+}
+
 interface ListOptions {
   limit: number;
   url: string;
@@ -88,6 +104,9 @@ export async function cambly(args: string[]): Promise<void> {
       return;
     case "fetch":
       await camblyFetch(parseFetchArgs(rest));
+      return;
+    case "loop":
+      await camblyLoop(parseLoopArgs(rest));
       return;
     case "analyze-missing":
       await camblyAnalyzeMissing(parseAnalyzeMissingArgs(rest));
@@ -221,6 +240,50 @@ async function camblyFetchOpenCli(options: FetchOptions): Promise<void> {
   }
 }
 
+async function camblyLoop(options: LoopOptions): Promise<void> {
+  if (!usesOpenCli(options)) {
+    throw new Error(
+      "cambly loop requires OpenCLI Browser Bridge. Pass --opencli-session or set CAMBLY_OPENCLI_SESSION.",
+    );
+  }
+
+  await ensureCamblyImportDirs();
+  const state = await readCamblyState();
+  let stopRequested = false;
+  const onStop = (): void => {
+    stopRequested = true;
+    console.error("[cambly] Stop requested; finishing the current check.");
+  };
+
+  process.once("SIGINT", onStop);
+  process.once("SIGTERM", onStop);
+
+  try {
+    for (let run = 1; !stopRequested; run++) {
+      console.error(`[cambly] loop ${run}: checking for downloadable lessons...`);
+      try {
+        await fetchLessonV2TranscriptsOpenCli(state, options);
+        await writeCamblyState(state);
+      } catch (err) {
+        if (options.strict) throw err;
+        console.error(
+          `[cambly] loop ${run}: check failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+
+      if (options.maxRuns && run >= options.maxRuns) break;
+      if (stopRequested) break;
+
+      console.error(`[cambly] loop ${run}: sleeping ${formatDuration(options.intervalMs)}...`);
+      await delayUntilStopped(options.intervalMs, () => stopRequested);
+    }
+  } finally {
+    process.off("SIGINT", onStop);
+    process.off("SIGTERM", onStop);
+    await writeCamblyState(state);
+  }
+}
+
 async function camblyAnalyzeMissing(options: FetchOptions): Promise<void> {
   await ensureCamblyImportDirs();
   const state = await readCamblyState();
@@ -332,32 +395,80 @@ async function fetchApiVideosOpenCli(
   let processed = 0;
   for (const candidate of candidates) {
     if (processed >= options.limit) break;
+    processed += 1;
 
     console.error(`[cambly] ${candidate.chatId}: resolving latest downloadable video...`);
-    await openCamblyWithOpenCli(candidate.lessonUrl, options);
-    await delay(1_500);
+    try {
+      await openCamblyWithOpenCli(candidate.lessonUrl, options);
+      await delay(1_500);
 
-    const resolved = await tryResolveOpenCliVideo(options);
-    if (!resolved) {
-      const message = `Could not resolve video source for Cambly chat ${candidate.chatId}.`;
-      if (options.strict) throw new Error(message);
-      console.error(`[cambly] ${message}`);
-      continue;
+      const resolved = await tryResolveOpenCliVideo(options);
+      if (!resolved) {
+        const message = `Could not resolve video source for Cambly chat ${candidate.chatId}.`;
+        if (options.strict) throw new Error(message);
+        console.error(`[cambly] ${message}`);
+        continue;
+      }
+
+      await saveAndMaybeAnalyzeOpenCliVideo(
+        {
+          url: resolved.url,
+          suggestedFilename: candidate.suggestedFilename,
+          lessonUrl: candidate.lessonUrl,
+          recordedAt: candidate.recordedAt,
+        },
+        state,
+        options,
+      );
+    } catch (err) {
+      if (options.strict) throw err;
+      console.error(
+        `[cambly] ${candidate.chatId}: failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
-
-    await saveAndMaybeAnalyzeOpenCliVideo(
-      {
-        url: resolved.url,
-        suggestedFilename: candidate.suggestedFilename,
-        lessonUrl: candidate.lessonUrl,
-      },
-      state,
-      options,
-    );
-    processed += 1;
   }
 
   console.error(`[cambly] Processed ${processed} Cambly API video(s).`);
+  return processed;
+}
+
+async function fetchLessonV2TranscriptsOpenCli(
+  state: CamblyImportState,
+  options: LoopOptions,
+): Promise<number> {
+  await openCamblyWithOpenCli(withCacheBust(options.url), options);
+  await delay(2_000);
+
+  const candidates = await listCamblyLessonsV2WithOpenCli(options, Math.max(options.limit, 10));
+  const filtered = candidates.filter((candidate) => isWithinLoopWindow(candidate, options));
+  if (filtered.length === 0) {
+    console.error(`[cambly] No Cambly lessons found in ${formatLoopWindow(options)}.`);
+    return 0;
+  }
+
+  let processed = 0;
+  for (const candidate of filtered.slice(0, options.limit)) {
+    processed += 1;
+    console.error(`[cambly] ${candidate.lessonId}: fetching lesson transcript...`);
+    try {
+      const transcript = await fetchCamblyLessonTranscriptWithOpenCli(candidate.lessonId, options);
+      if (!transcript || transcript.transcript.length === 0) {
+        const message = "Lesson transcript is not available yet.";
+        if (options.strict) throw new Error(message);
+        markLessonNotDownloadable(candidate, state, message);
+        console.error(`[cambly] ${candidate.lessonId}: ${message}`);
+        continue;
+      }
+      await saveAndMaybeAnalyzeTranscript(candidate, transcript, state, options);
+    } catch (err) {
+      if (options.strict) throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      markLessonFailed(candidate, state, message);
+      console.error(`[cambly] ${candidate.lessonId}: failed: ${message}`);
+    }
+  }
+
+  console.error(`[cambly] Processed ${processed} Cambly lesson transcript(s).`);
   return processed;
 }
 
@@ -571,6 +682,8 @@ async function saveAndMaybeAnalyzeOpenCliVideo(
     {
       suggestedFilename: video.suggestedFilename,
       lessonUrl: sanitizeCamblyUrl(video.lessonUrl ?? ""),
+      recordedAt: video.recordedAt,
+      tutorName: video.tutorName,
       downloadUrl: video.url,
       saveAs: (targetPath) => downloadRemoteFile(video.url, targetPath),
     },
@@ -579,10 +692,52 @@ async function saveAndMaybeAnalyzeOpenCliVideo(
   );
 }
 
+async function saveAndMaybeAnalyzeTranscript(
+  lesson: OpenCliCamblyLessonV2Candidate,
+  transcript: OpenCliCamblyLessonTranscript,
+  state: CamblyImportState,
+  options: FetchOptions,
+): Promise<void> {
+  const existing = state.lessons[lesson.lessonId];
+  const targetPath = join(CAMBLY_TRANSCRIPTS_DIR, `${lesson.lessonId}.json`);
+  const existingTranscriptPath = existing?.downloadedTranscript
+    ? join(CAMBLY_TRANSCRIPTS_DIR, existing.downloadedTranscript.replace(/^transcripts\//, ""))
+    : targetPath;
+
+  if (existing?.downloadedTranscript && existsSync(existingTranscriptPath)) {
+    console.error(`[cambly] ${lesson.lessonId}: transcript already saved.`);
+    if (updateLessonMetadata(lesson, state)) await writeCamblyState(state);
+    if (options.analyze) await analyzeExistingTranscriptLesson(lesson, transcript, state, options);
+    return;
+  }
+
+  console.error(`[cambly] ${lesson.lessonId}: saving transcript`);
+  await writeFile(targetPath, JSON.stringify(transcript, null, 2));
+  state.lessons[lesson.lessonId] = {
+    ...existing,
+    provider: "cambly",
+    lessonId: lesson.lessonId,
+    lessonUrl: lesson.lessonUrl,
+    recordedAt: lesson.recordedAt,
+    tutorName: lesson.tutorName ?? existing?.tutorName,
+    downloadedTranscript: toCamblyStatePath(targetPath),
+    status: "downloaded",
+    updatedAt: new Date().toISOString(),
+    error: undefined,
+  };
+  await writeCamblyState(state);
+
+  if (options.analyze) {
+    await analyzeExistingTranscriptLesson(lesson, transcript, state, options);
+  }
+}
+
 async function saveAndMaybeAnalyzeFile(
   download: {
     suggestedFilename: string;
     lessonUrl?: string;
+    recordedAt?: string;
+    tutorName?: string;
     downloadUrl: string;
     saveAs: (targetPath: string) => Promise<void>;
     onDuplicate?: () => Promise<void>;
@@ -603,6 +758,19 @@ async function saveAndMaybeAnalyzeFile(
     !options.forceDownload
   ) {
     console.error(`[cambly] ${lessonId}: already downloaded; keeping existing video.`);
+    let changed = false;
+    if (download.recordedAt && existing.recordedAt !== download.recordedAt) {
+      existing.recordedAt = download.recordedAt;
+      changed = true;
+    }
+    if (download.tutorName && existing.tutorName !== download.tutorName) {
+      existing.tutorName = download.tutorName;
+      changed = true;
+    }
+    if (changed) {
+      existing.updatedAt = new Date().toISOString();
+      await writeCamblyState(state);
+    }
     if (options.analyze) await analyzeExistingLesson(lessonId, state, options);
     await download.onDuplicate?.();
     return;
@@ -620,6 +788,8 @@ async function saveAndMaybeAnalyzeFile(
     provider: "cambly",
     lessonId,
     lessonUrl: download.lessonUrl ?? existing?.lessonUrl,
+    recordedAt: download.recordedAt ?? existing?.recordedAt,
+    tutorName: download.tutorName ?? existing?.tutorName,
     downloadedVideo: toCamblyStatePath(targetPath),
     status: "downloaded",
     updatedAt: new Date().toISOString(),
@@ -629,6 +799,73 @@ async function saveAndMaybeAnalyzeFile(
 
   if (options.analyze) {
     await analyzeExistingLesson(lessonId, state, options);
+  }
+}
+
+async function analyzeExistingTranscriptLesson(
+  lesson: OpenCliCamblyLessonV2Candidate,
+  transcript: OpenCliCamblyLessonTranscript,
+  state: CamblyImportState,
+  options: FetchOptions,
+): Promise<void> {
+  const record = state.lessons[lesson.lessonId];
+  if (!record?.downloadedTranscript) return;
+
+  if (record.reviewId && analysisExists(record.reviewId) && !options.forceAnalyze) {
+    console.error(`[cambly] ${lesson.lessonId}: already analyzed as ${record.reviewId}.`);
+    return;
+  }
+
+  try {
+    console.error(`[cambly] ${lesson.lessonId}: analyzing transcript with ${analyzerName()}...`);
+    const reviewId = randomUUID();
+    await ensureReviewDir(reviewId);
+    const segments = toWhisperSegments(transcript, lesson);
+    const durationSec = segments.at(-1)?.endSec ?? (lesson.scheduledMinutes ?? 0) * 60;
+    const meta: ReviewMeta = {
+      id: reviewId,
+      schemaVersion: SCHEMA_VERSION,
+      createdAt: new Date().toISOString(),
+      sourcePath: record.downloadedTranscript,
+      sourceFilename: basename(record.downloadedTranscript),
+      sourceProvider: "cambly",
+      sourceUrl: lesson.lessonUrl,
+      externalId: lesson.lessonId,
+      lessonAt: lesson.recordedAt,
+      tutorName: lesson.tutorName,
+      durationSec,
+      audioFile: "",
+      modelTranscribe: "cambly/lesson-transcript",
+      modelAnalyze: analyzerName(),
+      language: "en",
+    };
+    await writeMeta(meta);
+
+    const {
+      title,
+      transcript: analyzedTranscript,
+      issues,
+      summary,
+      coaching,
+    } = await analyze(segments);
+    if (title) {
+      meta.title = title;
+      await writeMeta(meta);
+    }
+    await writeAnalysis({ meta, transcript: analyzedTranscript, issues, summary, coaching });
+
+    record.reviewId = reviewId;
+    record.status = "analyzed";
+    record.updatedAt = new Date().toISOString();
+    record.error = undefined;
+    await writeCamblyState(state);
+  } catch (err) {
+    record.status = "failed";
+    record.updatedAt = new Date().toISOString();
+    record.error = err instanceof Error ? err.message : String(err);
+    await writeCamblyState(state);
+    if (options.strict) throw err;
+    console.error(`[cambly] ${lesson.lessonId}: analysis failed: ${record.error}`);
   }
 }
 
@@ -714,6 +951,85 @@ async function clickFirstDownloadButton(page: Page): Promise<void> {
 
 function analysisExists(reviewId: string): boolean {
   return existsSync(join(reviewDir(reviewId), "analysis.json"));
+}
+
+function updateLessonMetadata(
+  lesson: OpenCliCamblyLessonV2Candidate,
+  state: CamblyImportState,
+): boolean {
+  const record = state.lessons[lesson.lessonId];
+  if (!record) return false;
+  let changed = false;
+  if (lesson.recordedAt && record.recordedAt !== lesson.recordedAt) {
+    record.recordedAt = lesson.recordedAt;
+    changed = true;
+  }
+  if (lesson.tutorName && record.tutorName !== lesson.tutorName) {
+    record.tutorName = lesson.tutorName;
+    changed = true;
+  }
+  if (changed) record.updatedAt = new Date().toISOString();
+  return changed;
+}
+
+function markLessonNotDownloadable(
+  lesson: OpenCliCamblyLessonV2Candidate,
+  state: CamblyImportState,
+  message: string,
+): void {
+  state.lessons[lesson.lessonId] = {
+    ...state.lessons[lesson.lessonId],
+    provider: "cambly",
+    lessonId: lesson.lessonId,
+    lessonUrl: lesson.lessonUrl,
+    recordedAt: lesson.recordedAt,
+    tutorName: lesson.tutorName ?? state.lessons[lesson.lessonId]?.tutorName,
+    status: "not-downloadable",
+    updatedAt: new Date().toISOString(),
+    error: message,
+  };
+}
+
+function markLessonFailed(
+  lesson: OpenCliCamblyLessonV2Candidate,
+  state: CamblyImportState,
+  message: string,
+): void {
+  state.lessons[lesson.lessonId] = {
+    ...state.lessons[lesson.lessonId],
+    provider: "cambly",
+    lessonId: lesson.lessonId,
+    lessonUrl: lesson.lessonUrl,
+    recordedAt: lesson.recordedAt,
+    tutorName: lesson.tutorName ?? state.lessons[lesson.lessonId]?.tutorName,
+    status: "failed",
+    updatedAt: new Date().toISOString(),
+    error: message,
+  };
+}
+
+function toWhisperSegments(
+  transcript: OpenCliCamblyLessonTranscript,
+  lesson: OpenCliCamblyLessonV2Candidate,
+): WhisperSegment[] {
+  return transcript.transcript.map((entry, index) => {
+    const next = transcript.transcript[index + 1];
+    const startSec = entry.startOffsetSeconds;
+    const endSec = Math.max(next?.startOffsetSeconds ?? startSec + 3, startSec + 0.5);
+    return {
+      startSec,
+      endSec,
+      text: entry.text,
+      speaker: entry.userId && entry.userId === lesson.tutorId ? "teacher" : "user",
+    };
+  });
+}
+
+function analyzerName(): string {
+  const analyzer = process.env.SPEAKING_REVIEW_ANALYZER?.toLowerCase();
+  if (analyzer === "codex") return process.env.CODEX_MODEL ?? "codex";
+  if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_MODEL ?? "claude-sonnet-4-6";
+  return process.env.CODEX_MODEL ?? "codex";
 }
 
 function buildLessonId(
@@ -858,6 +1174,71 @@ function parseAnalyzeMissingArgs(args: string[]): FetchOptions {
   return { ...options, analyze: true, urls: [] };
 }
 
+function parseLoopArgs(args: string[]): LoopOptions {
+  let limit = 10;
+  let analyze = true;
+  let forceAnalyze = false;
+  let forceDownload = false;
+  let strict = false;
+  let url = DEFAULT_CAMBLY_URL;
+  let intervalMs =
+    readOptionalDurationMs(process.env.CAMBLY_LOOP_INTERVAL, "CAMBLY_LOOP_INTERVAL") ?? 15 * 60_000;
+  let maxRuns = readOptionalPositiveInt(process.env.CAMBLY_LOOP_MAX_RUNS, "CAMBLY_LOOP_MAX_RUNS");
+  let { sinceMs, untilMs }: { sinceMs?: number; untilMs?: number } = localDayRangeMs(new Date());
+  const browser = readBrowserFlags(args);
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--limit") limit = parsePositiveInt(args[++i], "--limit");
+    else if (arg === "--analyze") analyze = true;
+    else if (arg === "--no-analyze") analyze = false;
+    else if (arg === "--force-analyze") forceAnalyze = true;
+    else if (arg === "--force-download") forceDownload = true;
+    else if (arg === "--strict") strict = true;
+    else if (arg === "--history-url") url = readRequiredValue(args[++i], "--history-url");
+    else if (arg === "--interval") intervalMs = parseDurationMs(args[++i], "--interval");
+    else if (arg === "--date") {
+      ({ sinceMs, untilMs } = localDayRangeMs(parseDateArg(args[++i], "--date")));
+    } else if (arg === "--since") {
+      sinceMs = parseDateArg(args[++i], "--since").getTime();
+      untilMs = undefined;
+    } else if (arg === "--all-history") {
+      sinceMs = undefined;
+      untilMs = undefined;
+    } else if (arg === "--interval-seconds") {
+      intervalMs = parsePositiveInt(args[++i], "--interval-seconds") * 1000;
+    } else if (arg === "--interval-minutes") {
+      intervalMs = parsePositiveInt(args[++i], "--interval-minutes") * 60_000;
+    } else if (arg === "--max-runs") {
+      maxRuns = parsePositiveInt(args[++i], "--max-runs");
+    } else if (arg === "--once") {
+      maxRuns = 1;
+    } else if (arg === "--profile-dir") i += 1;
+    else if (arg === "--channel") i += 1;
+    else if (arg === "--cdp-url") i += 1;
+    else if (arg === "--opencli-session") i += 1;
+    else if (arg === "--opencli-bin") i += 1;
+    else if (arg === "--download-pattern") i += 1;
+    else if (arg === "--download-timeout") i += 1;
+    else if (arg) throw new Error(`unknown cambly loop option: ${arg}`);
+  }
+
+  return {
+    ...browser,
+    limit,
+    analyze,
+    forceAnalyze,
+    forceDownload,
+    strict,
+    urls: [],
+    url,
+    intervalMs,
+    maxRuns,
+    sinceMs,
+    untilMs,
+  };
+}
+
 function readUrlFlag(args: string[]): string {
   let url = DEFAULT_CAMBLY_URL;
   for (let i = 0; i < args.length; i++) {
@@ -936,6 +1317,78 @@ function readOptionalPositiveInt(value: string | undefined, flag: string): numbe
   return parsePositiveInt(value, flag);
 }
 
+function readOptionalDurationMs(value: string | undefined, flag: string): number | undefined {
+  if (!value) return undefined;
+  return parseDurationMs(value, flag);
+}
+
+function parseDateArg(value: string | undefined, flag: string): Date {
+  const raw = readRequiredValue(value, flag);
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) throw new Error(`${flag} must be a date like 2026-06-27`);
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  if (
+    date.getFullYear() !== Number(match[1]) ||
+    date.getMonth() !== Number(match[2]) - 1 ||
+    date.getDate() !== Number(match[3])
+  ) {
+    throw new Error(`${flag} is not a valid calendar date`);
+  }
+  return date;
+}
+
+function localDayRangeMs(date: Date): { sinceMs: number; untilMs: number } {
+  const start = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const end = new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1);
+  return { sinceMs: start.getTime(), untilMs: end.getTime() };
+}
+
+function isWithinLoopWindow(
+  candidate: OpenCliCamblyLessonV2Candidate,
+  options: LoopOptions,
+): boolean {
+  const recordedAtMs = Date.parse(candidate.recordedAt);
+  if (Number.isNaN(recordedAtMs)) return false;
+  if (options.sinceMs !== undefined && recordedAtMs < options.sinceMs) return false;
+  if (options.untilMs !== undefined && recordedAtMs >= options.untilMs) return false;
+  return true;
+}
+
+function formatLoopWindow(options: LoopOptions): string {
+  if (options.sinceMs === undefined && options.untilMs === undefined) return "all history";
+  if (options.sinceMs !== undefined && options.untilMs !== undefined) {
+    return `${new Date(options.sinceMs).toLocaleString()} - ${new Date(options.untilMs).toLocaleString()}`;
+  }
+  if (options.sinceMs !== undefined) return `since ${new Date(options.sinceMs).toLocaleString()}`;
+  return `before ${new Date(options.untilMs ?? 0).toLocaleString()}`;
+}
+
+function parseDurationMs(value: string | undefined, flag: string): number {
+  const raw = readRequiredValue(value, flag).trim();
+  const match = raw.match(/^(\d+)(ms|s|m|h)?$/);
+  if (!match) {
+    throw new Error(`${flag} must be a duration like 30s, 15m, 1h, or 60000ms`);
+  }
+
+  const amount = Number(match[1]);
+  if (!Number.isInteger(amount) || amount < 1) {
+    throw new Error(`${flag} must be a positive duration`);
+  }
+
+  const unit = match[2] ?? "s";
+  if (unit === "ms") return amount;
+  if (unit === "s") return amount * 1000;
+  if (unit === "m") return amount * 60_000;
+  return amount * 60 * 60_000;
+}
+
+function formatDuration(ms: number): string {
+  if (ms % (60 * 60_000) === 0) return `${ms / (60 * 60_000)}h`;
+  if (ms % 60_000 === 0) return `${ms / 60_000}m`;
+  if (ms % 1000 === 0) return `${ms / 1000}s`;
+  return `${ms}ms`;
+}
+
 function withCacheBust(value: string): string {
   try {
     const url = new URL(value);
@@ -948,6 +1401,15 @@ function withCacheBust(value: string): string {
 
 async function delay(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function delayUntilStopped(ms: number, isStopped: () => boolean): Promise<void> {
+  let remaining = ms;
+  while (remaining > 0 && !isStopped()) {
+    const chunk = Math.min(remaining, 1000);
+    await delay(chunk);
+    remaining -= chunk;
+  }
 }
 
 async function waitForEnter(prompt: string): Promise<void> {
@@ -966,6 +1428,7 @@ Commands:
   cambly login                         Open a persistent Cambly browser profile
   cambly list [--limit 20]             Print lesson-like links from the current history page
   cambly fetch [options]               Download lesson videos and optionally analyze them
+  cambly loop [options]                Poll for new lessons, download them, and analyze them
   cambly analyze-missing [options]     Analyze downloaded lessons without an analysis file
 
 Fetch options:
@@ -985,9 +1448,20 @@ Fetch options:
   --force-analyze                      Re-run analysis even when analysis already exists
   --strict                             Stop on the first analysis failure
 
+Loop options:
+  --interval <duration>                Poll interval: 30s, 15m, 1h (default: 15m)
+  --interval-seconds N                 Poll interval in seconds
+  --interval-minutes N                 Poll interval in minutes
+  --date YYYY-MM-DD                    Only process lessons on a local calendar day
+  --since YYYY-MM-DD                   Process lessons from a local calendar day onward
+  --all-history                        Do not restrict the lesson date window
+  --max-runs N                         Stop after N checks
+  --once                               Run one check and exit
+
 Data:
   Browser profile: ~/.speaking-review/browser/cambly/ by default
   Download state:  ~/.speaking-review/imports/cambly/state.json
   Videos:          ~/.speaking-review/imports/cambly/videos/
+  Transcripts:     ~/.speaking-review/imports/cambly/transcripts/
 `);
 }

@@ -25,6 +25,8 @@ export interface OpenCliResolvedVideo {
   url: string;
   suggestedFilename: string;
   lessonUrl?: string;
+  recordedAt?: string;
+  tutorName?: string;
 }
 
 export interface OpenCliCamblyVideoCandidate {
@@ -33,6 +35,26 @@ export interface OpenCliCamblyVideoCandidate {
   suggestedFilename: string;
   recordedAt?: string;
   tutorId?: string;
+}
+
+export interface OpenCliCamblyLessonV2Candidate {
+  lessonId: string;
+  lessonUrl: string;
+  suggestedFilename: string;
+  recordedAt: string;
+  tutorId?: string;
+  tutorName?: string;
+  studentId?: string;
+  scheduledMinutes?: number;
+}
+
+export interface OpenCliCamblyLessonTranscript {
+  lessonId: string;
+  transcript: Array<{
+    text: string;
+    startOffsetSeconds: number;
+    userId?: string;
+  }>;
 }
 
 export interface OpenCliDownloadWaiter {
@@ -159,6 +181,96 @@ export async function listCamblyDownloadableVideosWithOpenCli(
     })()`,
   );
   return Array.isArray(result) ? result.filter(isCamblyVideoCandidate) : [];
+}
+
+export async function listCamblyLessonsV2WithOpenCli(
+  options: CamblyOpenCliOptions,
+  limit: number,
+): Promise<OpenCliCamblyLessonV2Candidate[]> {
+  const result = await evalWithOpenCli(
+    options,
+    `(async () => {
+      const current = await fetch("/api/users/current?viewAs=student", {
+        credentials: "include",
+      }).then((response) => response.json());
+      const userId = current?.result?.id || current?.result?.userId || current?.result?._id?.$oid;
+      if (!userId) return [];
+
+      const params = new URLSearchParams();
+      params.set("studentId", userId);
+      params.set("state", "done");
+      params.set("limit", String(${JSON.stringify(Math.max(limit * 3, 20))}));
+      params.set("sort", "-1");
+      params.set("viewAs", "student");
+      params.set("_", String(Date.now()));
+
+      const data = await fetch(\`/api/lessons_v2?\${params}\`, {
+        credentials: "include",
+      }).then((response) => response.json());
+      const lessons = Array.isArray(data.result) ? data.result : Object.values(data.result || {});
+      const tutorIds = Array.from(new Set(lessons.map((lesson) => lesson?.tutorId).filter(Boolean)));
+
+      let tutors = {};
+      if (tutorIds.length > 0) {
+        const tutorParams = new URLSearchParams();
+        for (const tutorId of tutorIds) tutorParams.append("ids[]", tutorId);
+        tutorParams.set("viewAs", "student");
+        tutors = await fetch(\`/api/users?\${tutorParams}\`, {
+          credentials: "include",
+        }).then((response) => response.json()).then((response) => response.result || {}).catch(() => ({}));
+      }
+
+      return lessons
+        .map((lesson) => {
+          const lessonId = lesson?.id || lesson?._id?.$oid;
+          const rawStartedAt = lesson?.startedAt?.$date || lesson?.scheduledStartAt?.$date || lesson?.doneAt?.$date || 0;
+          const startedAtMs = typeof rawStartedAt === "number" ? rawStartedAt : Date.parse(rawStartedAt || "");
+          const startedAt = Number.isFinite(startedAtMs) && startedAtMs > 0
+            ? new Date(startedAtMs).toISOString()
+            : undefined;
+          const tutor = lesson?.tutorId ? tutors[lesson.tutorId] : undefined;
+          const tutorName = (tutor?.displayName || tutor?.username || tutor?.name || "").trim() || undefined;
+          return {
+            lessonId,
+            lessonUrl: "https://www.cambly.com/en/student/progress/past-lessons?lang=en",
+            suggestedFilename: lessonId ? \`cambly-\${lessonId}.json\` : "cambly-lesson.json",
+            recordedAt: startedAt,
+            tutorId: lesson?.tutorId,
+            tutorName,
+            studentId: lesson?.principalStudentId || userId,
+            scheduledMinutes: lesson?.scheduledMinutes,
+            sortAt: startedAtMs || 0,
+          };
+        })
+        .filter((lesson) => lesson.lessonId && lesson.recordedAt)
+        .sort((a, b) => b.sortAt - a.sortAt)
+        .slice(0, ${JSON.stringify(Math.max(limit, 1))})
+        .map(({ sortAt, ...lesson }) => lesson);
+    })()`,
+  );
+  return Array.isArray(result) ? result.filter(isCamblyLessonV2Candidate) : [];
+}
+
+export async function fetchCamblyLessonTranscriptWithOpenCli(
+  lessonId: string,
+  options: CamblyOpenCliOptions,
+): Promise<OpenCliCamblyLessonTranscript | undefined> {
+  if (!/^[a-f0-9]{24}$/i.test(lessonId)) return undefined;
+  const result = await evalWithOpenCli(
+    options,
+    `(async () => {
+      const response = await fetch(${JSON.stringify(`/model/lesson_transcript/${lessonId}`)}, {
+        credentials: "include",
+      });
+      if (!response.ok) return null;
+      const data = await response.json();
+      return {
+        lessonId: data.lessonId || data.id,
+        transcript: Array.isArray(data.transcript) ? data.transcript : [],
+      };
+    })()`,
+  );
+  return isCamblyLessonTranscript(result) ? result : undefined;
 }
 
 export async function listRecentCamblyChatIdsWithOpenCli(
@@ -446,6 +558,35 @@ function isCamblyVideoCandidate(value: unknown): value is OpenCliCamblyVideoCand
     typeof value.suggestedFilename === "string" &&
     (value.recordedAt === undefined || typeof value.recordedAt === "string") &&
     (value.tutorId === undefined || typeof value.tutorId === "string")
+  );
+}
+
+function isCamblyLessonV2Candidate(value: unknown): value is OpenCliCamblyLessonV2Candidate {
+  return (
+    isRecord(value) &&
+    typeof value.lessonId === "string" &&
+    typeof value.lessonUrl === "string" &&
+    typeof value.suggestedFilename === "string" &&
+    typeof value.recordedAt === "string" &&
+    (value.tutorId === undefined || typeof value.tutorId === "string") &&
+    (value.tutorName === undefined || typeof value.tutorName === "string") &&
+    (value.studentId === undefined || typeof value.studentId === "string") &&
+    (value.scheduledMinutes === undefined || typeof value.scheduledMinutes === "number")
+  );
+}
+
+function isCamblyLessonTranscript(value: unknown): value is OpenCliCamblyLessonTranscript {
+  return (
+    isRecord(value) &&
+    typeof value.lessonId === "string" &&
+    Array.isArray(value.transcript) &&
+    value.transcript.every(
+      (entry) =>
+        isRecord(entry) &&
+        typeof entry.text === "string" &&
+        typeof entry.startOffsetSeconds === "number" &&
+        (entry.userId === undefined || typeof entry.userId === "string"),
+    )
   );
 }
 

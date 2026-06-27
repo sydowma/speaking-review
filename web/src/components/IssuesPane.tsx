@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
 import type { Issue, IssueCategory, Severity } from "@shared/types.ts";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { PracticeState } from "../lib/practiceStore.ts";
 
 interface Props {
@@ -8,6 +8,7 @@ interface Props {
   activeIssueId: string | null;
   /** segmentId currently being played by the global waveform, if any. */
   playingSegmentId: string | null;
+  canPlayOriginal: boolean;
   /** issueId whose suggested phrase is currently being spoken via TTS. */
   speakingIssueId: string | null;
   onIssueSelect: (issueId: string) => void;
@@ -43,6 +44,7 @@ export function IssuesPane({
   totalIssues,
   activeIssueId,
   playingSegmentId,
+  canPlayOriginal,
   speakingIssueId,
   onIssueSelect,
   onPlayOriginal,
@@ -54,13 +56,12 @@ export function IssuesPane({
   const [filter, setFilter] = useState<Severity | "all">("all");
   const filtered = useMemo(() => {
     const list = filter === "all" ? issues : issues.filter((i) => i.severity === filter);
-    return [...list].sort(
-      (a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity],
-    );
+    return [...list].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
   }, [issues, filter]);
 
   const activeRef = useRef<HTMLLIElement>(null);
   useEffect(() => {
+    if (!activeIssueId) return;
     if (activeRef.current) {
       activeRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
     }
@@ -91,19 +92,14 @@ export function IssuesPane({
 
       <div className="flex items-center gap-1 text-xs mb-3">
         <FilterChip active={filter === "all"} onClick={() => setFilter("all")}>
-          All ({issues.length}{filterTopic ? `/${totalIssues}` : ""})
+          All ({issues.length}
+          {filterTopic ? `/${totalIssues}` : ""})
         </FilterChip>
-        <FilterChip
-          active={filter === "critical"}
-          onClick={() => setFilter("critical")}
-        >
+        <FilterChip active={filter === "critical"} onClick={() => setFilter("critical")}>
           <span className="inline-block w-2 h-2 rounded-full bg-red-500 mr-1" />
           {counts.critical}
         </FilterChip>
-        <FilterChip
-          active={filter === "moderate"}
-          onClick={() => setFilter("moderate")}
-        >
+        <FilterChip active={filter === "moderate"} onClick={() => setFilter("moderate")}>
           <span className="inline-block w-2 h-2 rounded-full bg-amber-500 mr-1" />
           {counts.moderate}
         </FilterChip>
@@ -138,7 +134,9 @@ export function IssuesPane({
                 className="w-full text-left"
               >
                 <div className="flex items-center gap-2 text-xs">
-                  <span className={`inline-block w-2 h-2 rounded-full ${SEVERITY_DOT[issue.severity]}`} />
+                  <span
+                    className={`inline-block w-2 h-2 rounded-full ${SEVERITY_DOT[issue.severity]}`}
+                  />
                   <span className="text-zinc-600 dark:text-zinc-300 font-medium">
                     {CATEGORY_LABEL[issue.category]}
                   </span>
@@ -152,11 +150,15 @@ export function IssuesPane({
                         status === "got_it"
                           ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300"
                           : status === "needs_more"
-                          ? "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300"
-                          : "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400",
+                            ? "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300"
+                            : "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400",
                       ].join(" ")}
                     >
-                      {status === "got_it" ? "✓ 掌握" : status === "needs_more" ? "🔁 待复练" : "⏭ 已跳过"}
+                      {status === "got_it"
+                        ? "✓ 掌握"
+                        : status === "needs_more"
+                          ? "🔁 待复练"
+                          : "⏭ 已跳过"}
                     </span>
                   )}
                 </div>
@@ -172,7 +174,8 @@ export function IssuesPane({
                 </p>
                 <PlaybackButton
                   active={isPlayingOriginal}
-                  idleLabel="▶ 原句"
+                  disabled={!canPlayOriginal}
+                  idleLabel={canPlayOriginal ? "▶ 原句" : "无原声"}
                   activeLabel="⏸ 暂停"
                   onClick={(e) => {
                     e.stopPropagation();
@@ -225,22 +228,27 @@ function PlaybackButton({
   activeLabel,
   onClick,
   variant,
+  disabled = false,
 }: {
   active: boolean;
   idleLabel: string;
   activeLabel: string;
   onClick: (e: React.MouseEvent) => void;
   variant: "zinc" | "emerald";
+  disabled?: boolean;
 }): React.ReactElement {
-  const colors = active
-    ? "bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 border-zinc-900 dark:border-zinc-100"
-    : variant === "emerald"
-    ? "bg-white dark:bg-zinc-900 text-emerald-700 dark:text-emerald-300 border-emerald-300 dark:border-emerald-500/40 hover:border-emerald-500"
-    : "bg-white dark:bg-zinc-900 text-zinc-700 dark:text-zinc-200 border-zinc-300 dark:border-zinc-700 hover:border-zinc-500";
+  const colors = disabled
+    ? "bg-zinc-100 dark:bg-zinc-800 text-zinc-400 dark:text-zinc-500 border-zinc-200 dark:border-zinc-700 cursor-not-allowed"
+    : active
+      ? "bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 border-zinc-900 dark:border-zinc-100"
+      : variant === "emerald"
+        ? "bg-white dark:bg-zinc-900 text-emerald-700 dark:text-emerald-300 border-emerald-300 dark:border-emerald-500/40 hover:border-emerald-500"
+        : "bg-white dark:bg-zinc-900 text-zinc-700 dark:text-zinc-200 border-zinc-300 dark:border-zinc-700 hover:border-zinc-500";
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={disabled}
       className={`shrink-0 inline-flex items-center justify-center text-[11px] font-medium border rounded-md h-7 px-2.5 transition ${colors}`}
     >
       {active ? activeLabel : idleLabel}

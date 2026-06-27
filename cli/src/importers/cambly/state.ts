@@ -5,10 +5,12 @@ import type { CamblyImportState } from "./types.ts";
 
 export const CAMBLY_IMPORT_DIR = join(ROOT, "imports", "cambly");
 export const CAMBLY_VIDEOS_DIR = join(CAMBLY_IMPORT_DIR, "videos");
+export const CAMBLY_TRANSCRIPTS_DIR = join(CAMBLY_IMPORT_DIR, "transcripts");
 export const CAMBLY_STATE_PATH = join(CAMBLY_IMPORT_DIR, "state.json");
 
 export async function ensureCamblyImportDirs(): Promise<void> {
   await mkdir(CAMBLY_VIDEOS_DIR, { recursive: true });
+  await mkdir(CAMBLY_TRANSCRIPTS_DIR, { recursive: true });
 }
 
 export async function readCamblyState(): Promise<CamblyImportState> {

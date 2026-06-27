@@ -1,5 +1,3 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
 import type {
   Issue,
   IssueCategory,
@@ -7,24 +5,26 @@ import type {
   Severity,
   TranscriptSegment,
 } from "@shared/types.ts";
-import { audioUrl, fetchReview } from "../lib/reviewApi.ts";
-import { cancelSpeech, speak } from "../lib/tts.ts";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useParams } from "react-router-dom";
+import { ThemeToggle } from "../components/ThemeToggle.tsx";
+import { VoicePicker } from "../components/VoicePicker.tsx";
 import {
   createRangeClipPlayer,
   playElementAndWait,
+  type RangeClipPlayer,
   sleep,
   speakAndWait,
-  type RangeClipPlayer,
 } from "../lib/audioClip.ts";
-import { MicRecorder, type RecordingResult } from "../lib/recorder.ts";
 import {
   loadPracticeRemote,
-  setIssueStatusRemote,
   type PracticeState,
   type PracticeStatus,
+  setIssueStatusRemote,
 } from "../lib/practiceStore.ts";
-import { VoicePicker } from "../components/VoicePicker.tsx";
-import { ThemeToggle } from "../components/ThemeToggle.tsx";
+import { MicRecorder, type RecordingResult } from "../lib/recorder.ts";
+import { audioUrl, fetchReview } from "../lib/reviewApi.ts";
+import { cancelSpeech, speak } from "../lib/tts.ts";
 
 const CATEGORY_LABEL: Record<IssueCategory, string> = {
   grammar: "语法",
@@ -76,13 +76,18 @@ export function PracticePage(): React.ReactElement {
   }, [id]);
 
   useEffect(() => {
-    if (!id) return;
+    if (!id || !data?.meta.audioFile) {
+      clipRef.current?.destroy();
+      clipRef.current = null;
+      return;
+    }
     clipRef.current = createRangeClipPlayer(audioUrl(id));
     return () => {
       clipRef.current?.destroy();
+      clipRef.current = null;
       cancelSpeech();
     };
-  }, [id]);
+  }, [id, data?.meta.audioFile]);
 
   // Sort issues: unfinished first (skipped/needs_more/unseen), then by severity.
   const sortedIssues = useMemo<Issue[]>(() => {
@@ -104,10 +109,10 @@ export function PracticePage(): React.ReactElement {
   }, [data, issue]);
 
   const playOriginal = useCallback(() => {
-    if (!segment || !clipRef.current) return;
+    if (!segment || !data?.meta.audioFile || !clipRef.current) return;
     cancelSpeech();
     void clipRef.current.playRange(segment.startSec, segment.endSec);
-  }, [segment]);
+  }, [data?.meta.audioFile, segment]);
 
   const playSuggested = useCallback(
     (rate: number) => {
@@ -134,7 +139,7 @@ export function PracticePage(): React.ReactElement {
   }, []);
 
   const playSequence = useCallback(async () => {
-    if (!segment || !issue || !recording || !clipRef.current) return;
+    if (!segment || !issue || !recording || !data?.meta.audioFile || !clipRef.current) return;
     if (sequencePlaying) {
       stopSequence();
       return;
@@ -158,7 +163,7 @@ export function PracticePage(): React.ReactElement {
     } finally {
       setSequencePlaying(false);
     }
-  }, [segment, issue, recording, sequencePlaying, stopSequence]);
+  }, [data?.meta.audioFile, segment, issue, recording, sequencePlaying, stopSequence]);
 
   const startRecording = useCallback(async () => {
     cancelSpeech();
@@ -266,7 +271,10 @@ export function PracticePage(): React.ReactElement {
   if (!issue) {
     return (
       <div className="p-8">
-        <Link to={`/review/${id}`} className="text-xs text-zinc-500 dark:text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-200">
+        <Link
+          to={`/review/${id}`}
+          className="text-xs text-zinc-500 dark:text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-200"
+        >
           ← Back to review
         </Link>
         <p className="mt-4 text-zinc-700 dark:text-zinc-300">没有可练习的错题。</p>
@@ -274,22 +282,26 @@ export function PracticePage(): React.ReactElement {
     );
   }
 
-  const completedCount = sortedIssues.filter(
-    (i) => practice[i.id]?.status === "got_it",
-  ).length;
+  const completedCount = sortedIssues.filter((i) => practice[i.id]?.status === "got_it").length;
   const totalCount = sortedIssues.length;
   const progressPct = (completedCount / totalCount) * 100;
   const currentStatus = practice[issue.id]?.status;
+  const hasAudio = Boolean(data.meta.audioFile);
 
   return (
     <div className="min-h-screen bg-stone-50 dark:bg-zinc-950 flex flex-col">
       <header className="px-6 py-4 border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 flex items-center justify-between gap-4">
-        <Link to={`/review/${id}`} className="text-xs text-zinc-500 dark:text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-200">
+        <Link
+          to={`/review/${id}`}
+          className="text-xs text-zinc-500 dark:text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-200"
+        >
           ← Back to review
         </Link>
         <div className="text-sm font-medium tabular-nums">
           {index + 1} / {totalCount}
-          <span className="ml-3 text-emerald-600 dark:text-emerald-400">已掌握 {completedCount}</span>
+          <span className="ml-3 text-emerald-600 dark:text-emerald-400">
+            已掌握 {completedCount}
+          </span>
         </div>
         <div className="flex items-center gap-2">
           <VoicePicker />
@@ -315,14 +327,20 @@ export function PracticePage(): React.ReactElement {
             {issue.bandImpact && <span>· {issue.bandImpact}</span>}
             {currentStatus && (
               <span className="ml-auto text-[11px] px-2 py-0.5 rounded-full bg-stone-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300">
-                {currentStatus === "got_it" ? "已掌握" : currentStatus === "needs_more" ? "待复练" : "已跳过"}
+                {currentStatus === "got_it"
+                  ? "已掌握"
+                  : currentStatus === "needs_more"
+                    ? "待复练"
+                    : "已跳过"}
               </span>
             )}
           </div>
 
           {/* Original */}
           <section className="mt-5">
-            <div className="text-xs uppercase tracking-wide text-zinc-400 dark:text-zinc-500">你说的</div>
+            <div className="text-xs uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
+              你说的
+            </div>
             <div className="mt-2 flex items-start gap-3">
               <p className="flex-1 text-zinc-700 dark:text-zinc-300 leading-relaxed line-through decoration-red-400">
                 {issue.original}
@@ -340,7 +358,9 @@ export function PracticePage(): React.ReactElement {
 
           {/* Suggested */}
           <section className="mt-6 rounded-xl bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-500/30 p-4">
-            <div className="text-xs uppercase tracking-wide text-emerald-700 dark:text-emerald-300">应该说</div>
+            <div className="text-xs uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+              应该说
+            </div>
             <p className="mt-2 text-emerald-900 dark:text-emerald-100 text-lg font-medium leading-relaxed">
               {issue.suggested}
             </p>
@@ -372,7 +392,9 @@ export function PracticePage(): React.ReactElement {
           <section className="mt-6 rounded-xl border border-zinc-200 dark:border-zinc-800 p-4 bg-stone-50 dark:bg-zinc-950/40">
             <div className="text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400 mb-3">
               录你自己念一遍
-              <span className="ml-2 normal-case text-[10px] text-zinc-400 dark:text-zinc-500">按 R 键</span>
+              <span className="ml-2 normal-case text-[10px] text-zinc-400 dark:text-zinc-500">
+                按 R 键
+              </span>
             </div>
 
             {!recording && (
@@ -402,9 +424,10 @@ export function PracticePage(): React.ReactElement {
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                   <CompareCard
                     label="① 你说过的"
-                    sublabel="原始录音"
+                    sublabel={hasAudio ? "原始录音" : "无原声"}
                     onPlay={playOriginal}
                     color="zinc"
+                    disabled={!hasAudio}
                   />
                   <CompareCard
                     label="② 应该说"
@@ -423,14 +446,17 @@ export function PracticePage(): React.ReactElement {
                   <button
                     type="button"
                     onClick={playSequence}
+                    disabled={!hasAudio}
                     className={[
                       "inline-flex items-center gap-1.5 text-sm font-medium rounded-lg px-3 py-2 shadow-sm",
-                      sequencePlaying
-                        ? "bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900"
-                        : "bg-blue-600 hover:bg-blue-500 text-white",
+                      !hasAudio
+                        ? "bg-zinc-200 dark:bg-zinc-800 text-zinc-400 dark:text-zinc-500 cursor-not-allowed"
+                        : sequencePlaying
+                          ? "bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900"
+                          : "bg-blue-600 hover:bg-blue-500 text-white",
                     ].join(" ")}
                   >
-                    {sequencePlaying ? "⏹ 停止" : "▶ 顺序对比播放"}
+                    {!hasAudio ? "缺少原声" : sequencePlaying ? "⏹ 停止" : "▶ 顺序对比播放"}
                   </button>
                   <button
                     type="button"
@@ -531,11 +557,13 @@ function CompareCard({
   sublabel,
   onPlay,
   color,
+  disabled = false,
 }: {
   label: string;
   sublabel: string;
   onPlay: () => void;
   color: keyof typeof COMPARE_COLORS;
+  disabled?: boolean;
 }): React.ReactElement {
   const c = COMPARE_COLORS[color];
   return (
@@ -545,9 +573,15 @@ function CompareCard({
       <button
         type="button"
         onClick={onPlay}
-        className={`mt-2 w-full inline-flex items-center justify-center gap-1.5 rounded-md text-xs font-medium px-2 py-1.5 ${c.btn}`}
+        disabled={disabled}
+        className={[
+          "mt-2 w-full inline-flex items-center justify-center gap-1.5 rounded-md text-xs font-medium px-2 py-1.5",
+          disabled
+            ? "bg-zinc-200 dark:bg-zinc-800 text-zinc-400 dark:text-zinc-500 cursor-not-allowed"
+            : c.btn,
+        ].join(" ")}
       >
-        ▶ 播放
+        {disabled ? "无原声" : "▶ 播放"}
       </button>
     </div>
   );

@@ -1,29 +1,35 @@
 // whisper-cpp wrapper: wav → segments with start/end timestamps + text.
 
 import { spawn } from "node:child_process";
-import { homedir } from "node:os";
-import { join, dirname } from "node:path";
 import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 
-const DEFAULT_MODEL = process.env.WHISPER_MODEL
-  ?? join(homedir(), "whisper-models", "ggml-large-v3.bin");
+const DEFAULT_MODEL =
+  process.env.WHISPER_MODEL ?? join(homedir(), "whisper-models", "ggml-large-v3.bin");
 
 export interface WhisperSegment {
   startSec: number;
   endSec: number;
   text: string;
+  speaker?: "user" | "teacher";
 }
 
 export async function transcribe(wavPath: string): Promise<WhisperSegment[]> {
   // whisper-cli outputs <prefix>.json next to <prefix>.wav when -oj is set.
   const prefix = wavPath.replace(/\.wav$/, "");
   await runWhisper([
-    "-m", DEFAULT_MODEL,
-    "-f", wavPath,
-    "-l", "en",
+    "-m",
+    DEFAULT_MODEL,
+    "-f",
+    wavPath,
+    "-l",
+    "en",
     "-oj",
-    "-of", prefix,
-    "-t", "8",
+    "-of",
+    prefix,
+    "-t",
+    "8",
   ]);
   const json = JSON.parse(await readFile(`${prefix}.json`, "utf8"));
   return parseWhisperJson(json);
@@ -72,13 +78,19 @@ function parseTimestamp(ts: string): number {
 }
 
 function runWhisper(args: string[]): Promise<void> {
+  const inputIndex = args.indexOf("-f") + 1;
+  const inputPath = inputIndex > 0 ? args[inputIndex] : undefined;
+  if (!inputPath) throw new Error("whisper-cli args are missing -f <wav-path>");
+
   return new Promise((resolve, reject) => {
     const p = spawn("whisper-cli", args, {
       stdio: ["ignore", "pipe", "pipe"],
-      cwd: dirname(args[args.indexOf("-f") + 1]!),
+      cwd: dirname(inputPath),
     });
     let stderr = "";
-    p.stderr.on("data", (d) => { stderr += d.toString(); });
+    p.stderr.on("data", (d) => {
+      stderr += d.toString();
+    });
     p.on("error", reject);
     p.on("close", (code) => {
       if (code === 0) resolve();

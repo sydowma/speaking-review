@@ -1,18 +1,19 @@
+import type { ReviewAnalysis, TranscriptSegment } from "@shared/types.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import type { ReviewAnalysis, TranscriptSegment } from "@shared/types.ts";
-import { fetchReview } from "../lib/reviewApi.ts";
-import { formatDate, formatDuration } from "../lib/format.ts";
-import { Waveform, type WaveformHandle } from "../components/Waveform.tsx";
-import { TranscriptPane } from "../components/TranscriptPane.tsx";
+import { CoachingPanel } from "../components/CoachingPanel.tsx";
 import { IssuesPane } from "../components/IssuesPane.tsx";
 import { SummaryCard } from "../components/SummaryCard.tsx";
-import { VoicePicker } from "../components/VoicePicker.tsx";
 import { ThemeToggle } from "../components/ThemeToggle.tsx";
+import { TranscriptPane } from "../components/TranscriptPane.tsx";
+import { VoicePicker } from "../components/VoicePicker.tsx";
+import { Waveform, type WaveformHandle } from "../components/Waveform.tsx";
+import { formatDate, formatDuration } from "../lib/format.ts";
 import { loadPracticeRemote, type PracticeState } from "../lib/practiceStore.ts";
+import { fetchReview } from "../lib/reviewApi.ts";
 import { cancelSpeech, speak } from "../lib/tts.ts";
 
-type MobileTab = "transcript" | "issues" | "summary";
+type MobileTab = "transcript" | "coaching" | "issues" | "summary";
 
 export function ReviewDetailPage(): React.ReactElement {
   const { id } = useParams<{ id: string }>();
@@ -39,10 +40,7 @@ export function ReviewDetailPage(): React.ReactElement {
   }, [id]);
 
   const playSegment = useCallback(
-    (
-      seg: Pick<TranscriptSegment, "id" | "startSec" | "endSec">,
-      opts: { loop?: boolean } = {},
-    ) => {
+    (seg: Pick<TranscriptSegment, "id" | "startSec" | "endSec">, opts: { loop?: boolean } = {}) => {
       const ws = waveformRef.current;
       if (!ws) return;
       cancelSpeech();
@@ -65,15 +63,17 @@ export function ReviewDetailPage(): React.ReactElement {
 
   const handleSegmentClick = useCallback(
     (segmentId: string, startSec: number, endSec: number) => {
+      if (!data) return;
       setActiveIssueId(null);
+      setActiveSegmentId(segmentId);
       // Toggle: clicking the segment that's already playing pauses it.
       if (playingSegmentId === segmentId) {
         pauseAll();
-      } else {
+      } else if (data.meta.audioFile) {
         playSegment({ id: segmentId, startSec, endSec });
       }
     },
-    [playSegment, pauseAll, playingSegmentId],
+    [data, playSegment, pauseAll, playingSegmentId],
   );
 
   const handleIssueSelect = useCallback(
@@ -100,6 +100,8 @@ export function ReviewDetailPage(): React.ReactElement {
       const seg = data.transcript.find((s) => s.id === issue.segmentId);
       if (!seg) return;
       setActiveIssueId(issueId);
+      setActiveSegmentId(seg.id);
+      if (!data.meta.audioFile) return;
       if (playingSegmentId === seg.id) {
         pauseAll();
       } else {
@@ -157,7 +159,10 @@ export function ReviewDetailPage(): React.ReactElement {
     <div className="min-h-screen flex flex-col bg-stone-50 dark:bg-zinc-950">
       <header className="px-4 sm:px-6 py-3 sm:py-4 border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 flex items-center justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <Link to="/" className="text-xs text-zinc-500 dark:text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-200">
+          <Link
+            to="/"
+            className="text-xs text-zinc-500 dark:text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-200"
+          >
             ← All reviews
           </Link>
           <div className="text-sm sm:text-base font-medium truncate mt-0.5">
@@ -165,7 +170,12 @@ export function ReviewDetailPage(): React.ReactElement {
           </div>
           <div className="text-xs text-zinc-500 dark:text-zinc-400 hidden sm:block">
             {formatDate(data.meta.createdAt)} · {formatDuration(data.meta.durationSec)}
-            {data.meta.title && <span className="text-zinc-400 dark:text-zinc-600"> · {data.meta.sourceFilename}</span>}
+            {data.meta.title && (
+              <span className="text-zinc-400 dark:text-zinc-600">
+                {" "}
+                · {data.meta.sourceFilename}
+              </span>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -199,6 +209,11 @@ export function ReviewDetailPage(): React.ReactElement {
           <TabButton active={mobileTab === "transcript"} onClick={() => setMobileTab("transcript")}>
             字幕
           </TabButton>
+          {data.coaching && (
+            <TabButton active={mobileTab === "coaching"} onClick={() => setMobileTab("coaching")}>
+              话术
+            </TabButton>
+          )}
           <TabButton active={mobileTab === "issues"} onClick={() => setMobileTab("issues")}>
             错题 ({data.issues.length})
           </TabButton>
@@ -229,11 +244,13 @@ export function ReviewDetailPage(): React.ReactElement {
             mobileTab !== "issues" ? "hidden lg:block" : "",
           ].join(" ")}
         >
+          {data.coaching && <CoachingPanel coaching={data.coaching} />}
           <IssuesPane
             issues={filteredIssues}
             totalIssues={data.issues.length}
             activeIssueId={activeIssueId}
             playingSegmentId={playingSegmentId}
+            canPlayOriginal={Boolean(data.meta.audioFile)}
             speakingIssueId={speakingIssueId}
             onIssueSelect={handleIssueSelect}
             onPlayOriginal={handlePlayIssueOriginal}
@@ -243,6 +260,12 @@ export function ReviewDetailPage(): React.ReactElement {
             practice={practice}
           />
         </div>
+
+        {mobileTab === "coaching" && data.coaching && (
+          <div className="lg:hidden overflow-y-auto bg-stone-50 dark:bg-zinc-950">
+            <CoachingPanel coaching={data.coaching} />
+          </div>
+        )}
 
         {mobileTab === "summary" && (
           <div className="lg:hidden overflow-y-auto bg-stone-50 dark:bg-zinc-950">
@@ -265,6 +288,7 @@ export function ReviewDetailPage(): React.ReactElement {
           reviewId={id}
           transcript={data.transcript}
           issues={data.issues}
+          hasAudio={Boolean(data.meta.audioFile)}
           loopSingle={loopSingle}
           onLoopToggle={setLoopSingle}
           onSegmentEnter={setActiveSegmentId}

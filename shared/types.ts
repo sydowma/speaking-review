@@ -7,18 +7,13 @@ export type Speaker = "user" | "teacher";
 
 export type Severity = "critical" | "moderate" | "minor";
 
-export type IssueCategory =
-  | "grammar"
-  | "vocabulary"
-  | "fluency"
-  | "pronunciation"
-  | "discourse";
+export type IssueCategory = "grammar" | "vocabulary" | "fluency" | "pronunciation" | "discourse";
 
 export interface ReviewMeta {
   id: string;
   schemaVersion: number;
-  createdAt: string;          // ISO 8601
-  sourcePath: string;         // original mp4/mp3 path (not copied)
+  createdAt: string; // ISO 8601
+  sourcePath: string; // original mp4/mp3 path (not copied)
   sourceFilename: string;
   sourceProvider?: "local" | "cambly";
   sourceUrl?: string;
@@ -31,10 +26,10 @@ export interface ReviewMeta {
    */
   title?: string;
   durationSec: number;
-  audioFile: string;          // relative: "audio.wav"
-  modelTranscribe: string;    // e.g. "whisper-cpp/ggml-large-v3"
-  modelAnalyze: string;       // e.g. "claude-sonnet-4-6"
-  language: string;           // "en"
+  audioFile: string; // relative: "audio.wav"
+  modelTranscribe: string; // e.g. "whisper-cpp/ggml-large-v3"
+  modelAnalyze: string; // e.g. "claude-sonnet-4-6"
+  language: string; // "en"
 }
 
 export interface TranscriptSegment {
@@ -43,7 +38,7 @@ export interface TranscriptSegment {
   endSec: number;
   speaker: Speaker;
   text: string;
-  issueIds: string[];         // back-reference to Issue.id
+  issueIds: string[]; // back-reference to Issue.id
 }
 
 export interface Issue {
@@ -51,20 +46,43 @@ export interface Issue {
   segmentId: string;
   severity: Severity;
   category: IssueCategory;
-  original: string;           // exact phrase from segment
-  suggested: string;          // corrected/idiomatic version
-  explanation: string;        // Chinese explanation of why
-  bandImpact?: string;        // e.g. "Lexical Resource"
+  original: string; // exact phrase from segment
+  suggested: string; // corrected/idiomatic version
+  explanation: string; // Chinese explanation of why
+  bandImpact?: string; // e.g. "Lexical Resource"
 }
 
 export interface ReviewSummary {
-  estimatedBandLow: number;   // e.g. 5.5
-  estimatedBandHigh: number;  // e.g. 6.0
-  topMistakes: string[];      // categorized patterns, not single instances
+  estimatedBandLow: number; // e.g. 5.5
+  estimatedBandHigh: number; // e.g. 6.0
+  topMistakes: string[]; // categorized patterns, not single instances
   strengths: string[];
   recommendations: string[];
-  fillerWordCount: number;    // count of "okay"/"yeah"/"uh" etc
-  userTalkRatio: number;      // 0-1: user talk-time / total
+  fillerWordCount: number; // count of "okay"/"yeah"/"uh" etc
+  userTalkRatio: number; // 0-1: user talk-time / total
+}
+
+export interface PhraseRewrite {
+  id: string;
+  situation: string; // e.g. "Explaining loop engineering at work"
+  sourceSegmentIds?: string[];
+  before?: string;
+  after: string; // polished, reusable speaking script
+  why: string; // Chinese rationale
+}
+
+export interface PracticeDrill {
+  id: string;
+  title: string;
+  focus: string;
+  minutes: number;
+  steps: string[];
+}
+
+export interface ReviewCoaching {
+  priorities: string[];
+  phraseRewrites: PhraseRewrite[];
+  practiceDrills: PracticeDrill[];
 }
 
 export interface ReviewAnalysis {
@@ -72,4 +90,5 @@ export interface ReviewAnalysis {
   transcript: TranscriptSegment[];
   issues: Issue[];
   summary: ReviewSummary;
+  coaching?: ReviewCoaching;
 }

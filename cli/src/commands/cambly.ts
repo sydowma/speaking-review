@@ -1,10 +1,23 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { extname, join } from "node:path";
+import { copyFile } from "node:fs/promises";
+import { basename, extname, join } from "node:path";
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
 import type { BrowserContext, Download, Page } from "playwright";
-import { DEFAULT_CAMBLY_URL, openCamblyBrowser } from "../importers/cambly/browser.ts";
+import {
+  closeCamblyBrowser,
+  DEFAULT_CAMBLY_URL,
+  openCamblyBrowser,
+} from "../importers/cambly/browser.ts";
+import {
+  clickDownloadWithOpenCli,
+  listCamblyLinksWithOpenCli,
+  type OpenCliDownloadResult,
+  openCamblyWithOpenCli,
+  usesOpenCli,
+  waitForOpenCliDownload,
+} from "../importers/cambly/opencli.ts";
 import {
   CAMBLY_VIDEOS_DIR,
   ensureCamblyImportDirs,
@@ -18,6 +31,13 @@ import { ingest } from "./ingest.ts";
 
 interface LoginOptions {
   url: string;
+  profileDir?: string;
+  channel?: string;
+  cdpUrl?: string;
+  opencliSession?: string;
+  opencliBin?: string;
+  downloadPattern?: string;
+  downloadTimeoutMs?: number;
 }
 
 interface FetchOptions {
@@ -28,11 +48,25 @@ interface FetchOptions {
   strict: boolean;
   urls: string[];
   url: string;
+  profileDir?: string;
+  channel?: string;
+  cdpUrl?: string;
+  opencliSession?: string;
+  opencliBin?: string;
+  downloadPattern?: string;
+  downloadTimeoutMs?: number;
 }
 
 interface ListOptions {
   limit: number;
   url: string;
+  profileDir?: string;
+  channel?: string;
+  cdpUrl?: string;
+  opencliSession?: string;
+  opencliBin?: string;
+  downloadPattern?: string;
+  downloadTimeoutMs?: number;
 }
 
 export async function cambly(args: string[]): Promise<void> {
@@ -62,47 +96,75 @@ export async function cambly(args: string[]): Promise<void> {
 }
 
 async function camblyLogin(options: LoginOptions): Promise<void> {
-  const { context } = await openCamblyBrowser(options.url);
-  console.error("[cambly] Browser opened with a persistent local profile.");
+  if (usesOpenCli(options)) {
+    await openCamblyWithOpenCli(options.url, options);
+    console.error("[cambly] Cambly opened through OpenCLI Browser Bridge.");
+    console.error("[cambly] Log in to Cambly in your normal Chrome window, then return here.");
+    await waitForEnter("[cambly] Press Enter after login...");
+    return;
+  }
+
+  const session = await openCamblyBrowser(options.url, options);
+  console.error(
+    session.browser
+      ? "[cambly] Connected to a Chrome DevTools endpoint."
+      : "[cambly] Browser opened with a persistent local profile.",
+  );
   console.error("[cambly] Log in to Cambly normally, then return here.");
-  await waitForEnter("[cambly] Press Enter after login to close the browser...");
-  await context.close();
+  await waitForEnter("[cambly] Press Enter after login to close the browser session...");
+  await closeCamblyBrowser(session);
 }
 
 async function camblyList(options: ListOptions): Promise<void> {
-  const { context, page } = await openCamblyBrowser(options.url);
-  await page.waitForLoadState("networkidle", { timeout: 8_000 }).catch(() => undefined);
-
-  const links = await page
-    .locator("a")
-    .evaluateAll((anchors) =>
-      anchors.map((anchor) => ({
-        href: (anchor as HTMLAnchorElement).href,
-        text: (anchor.textContent ?? "").replace(/\s+/g, " ").trim(),
-      })),
-    )
-    .catch(() => []);
-
-  const candidates = links
-    .filter((link) => /lesson|history|record|progress|download/i.test(`${link.text} ${link.href}`))
-    .slice(0, options.limit);
-
-  if (candidates.length === 0) {
-    console.error("[cambly] No lesson-like links found on the current page.");
-    console.error("[cambly] If you are not logged in, run `speaking-review cambly login` first.");
-  } else {
-    for (const link of candidates) {
-      console.log(`${link.text || "(untitled)"}\t${link.href}`);
-    }
+  if (usesOpenCli(options)) {
+    await camblyListOpenCli(options);
+    return;
   }
 
-  await context.close();
+  const session = await openCamblyBrowser(options.url, options);
+  const { page } = session;
+  try {
+    await page.waitForLoadState("networkidle", { timeout: 8_000 }).catch(() => undefined);
+
+    const links = await page
+      .locator("a")
+      .evaluateAll((anchors) =>
+        anchors.map((anchor) => ({
+          href: (anchor as HTMLAnchorElement).href,
+          text: (anchor.textContent ?? "").replace(/\s+/g, " ").trim(),
+        })),
+      )
+      .catch(() => []);
+
+    const candidates = links
+      .filter((link) =>
+        /lesson|history|record|progress|download/i.test(`${link.text} ${link.href}`),
+      )
+      .slice(0, options.limit);
+
+    if (candidates.length === 0) {
+      console.error("[cambly] No lesson-like links found on the current page.");
+      console.error("[cambly] If you are not logged in, run `speaking-review cambly login` first.");
+    } else {
+      for (const link of candidates) {
+        console.log(`${link.text || "(untitled)"}\t${link.href}`);
+      }
+    }
+  } finally {
+    await closeCamblyBrowser(session);
+  }
 }
 
 async function camblyFetch(options: FetchOptions): Promise<void> {
+  if (usesOpenCli(options)) {
+    await camblyFetchOpenCli(options);
+    return;
+  }
+
   await ensureCamblyImportDirs();
   const state = await readCamblyState();
-  const { context, page } = await openCamblyBrowser(options.url);
+  const session = await openCamblyBrowser(options.url, options);
+  const { context, page } = session;
 
   try {
     if (options.urls.length > 0) {
@@ -113,7 +175,40 @@ async function camblyFetch(options: FetchOptions): Promise<void> {
     await captureManualDownloads(context, state, options);
   } finally {
     await writeCamblyState(state);
-    await context.close();
+    await closeCamblyBrowser(session);
+  }
+}
+
+async function camblyListOpenCli(options: ListOptions): Promise<void> {
+  await openCamblyWithOpenCli(options.url, options);
+  const links = await listCamblyLinksWithOpenCli(options);
+  const candidates = links
+    .filter((link) => /lesson|history|record|progress|download/i.test(`${link.text} ${link.href}`))
+    .slice(0, options.limit);
+
+  if (candidates.length === 0) {
+    console.error("[cambly] No lesson-like links found on the current OpenCLI browser page.");
+    console.error("[cambly] Make sure OpenCLI is attached to a Chrome profile logged into Cambly.");
+  } else {
+    for (const link of candidates) {
+      console.log(`${link.text || "(untitled)"}\t${link.href}`);
+    }
+  }
+}
+
+async function camblyFetchOpenCli(options: FetchOptions): Promise<void> {
+  await ensureCamblyImportDirs();
+  const state = await readCamblyState();
+
+  try {
+    if (options.urls.length > 0) {
+      await fetchExplicitUrlsOpenCli(state, options);
+      return;
+    }
+
+    await captureManualDownloadsOpenCli(state, options);
+  } finally {
+    await writeCamblyState(state);
   }
 }
 
@@ -158,6 +253,41 @@ async function fetchExplicitUrls(
   console.error(`[cambly] Processed ${processed} lesson URL(s).`);
 }
 
+async function fetchExplicitUrlsOpenCli(
+  state: CamblyImportState,
+  options: FetchOptions,
+): Promise<void> {
+  let processed = 0;
+  for (const url of options.urls.slice(0, options.limit)) {
+    console.error(`[cambly] Opening lesson URL through OpenCLI: ${url}`);
+    await openCamblyWithOpenCli(url, options);
+
+    const waiter = waitForOpenCliDownload(options);
+    const downloadPromise = settleDownloadWaiter(waiter.promise);
+    const click = await clickDownloadWithOpenCli(options);
+    if (!click.clicked) {
+      waiter.cancel();
+      await downloadPromise;
+      const message = "Could not find a visible Download button on the OpenCLI browser page.";
+      if (options.strict) throw new Error(message);
+      console.error(`[cambly] ${message}`);
+      continue;
+    }
+
+    const download = await downloadPromise;
+    if (!download.ok) throw download.error;
+    await saveAndMaybeAnalyzeOpenCliDownload(
+      download.value,
+      sanitizeCamblyUrl(url),
+      state,
+      options,
+    );
+    processed += 1;
+  }
+
+  console.error(`[cambly] Processed ${processed} lesson URL(s).`);
+}
+
 async function captureManualDownloads(
   context: BrowserContext,
   state: CamblyImportState,
@@ -193,6 +323,39 @@ async function captureManualDownloads(
   console.error(`[cambly] Captured ${accepted} download(s).`);
 }
 
+async function captureManualDownloadsOpenCli(
+  state: CamblyImportState,
+  options: FetchOptions,
+): Promise<void> {
+  await openCamblyWithOpenCli(options.url, options);
+  console.error("[cambly] Cambly is open through OpenCLI Browser Bridge.");
+  console.error(
+    "[cambly] Open Progress / Lesson History in Chrome and click one Download at a time.",
+  );
+  console.error(`[cambly] Capturing up to ${options.limit} download(s).`);
+
+  let accepted = 0;
+  for (let i = 0; i < options.limit; i++) {
+    const waiter = waitForOpenCliDownload(options);
+    const downloadPromise = settleDownloadWaiter(waiter.promise);
+    await waitForEnter(`[cambly] Click Download for lesson ${i + 1}, then press Enter here...`);
+
+    try {
+      const download = await downloadPromise;
+      if (!download.ok) throw download.error;
+      await saveAndMaybeAnalyzeOpenCliDownload(download.value, undefined, state, options);
+      accepted += 1;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (options.strict) throw err;
+      console.error(`[cambly] Download capture stopped: ${message}`);
+      break;
+    }
+  }
+
+  console.error(`[cambly] Captured ${accepted} download(s).`);
+}
+
 async function saveAndMaybeAnalyzeDownload(
   download: Download,
   page: Page,
@@ -201,7 +364,72 @@ async function saveAndMaybeAnalyzeDownload(
 ): Promise<void> {
   const suggestedFilename = download.suggestedFilename();
   const lessonUrl = sanitizeCamblyUrl(page.url());
-  const lessonId = buildLessonId(lessonUrl, suggestedFilename, download.url());
+  await saveAndMaybeAnalyzeFile(
+    {
+      suggestedFilename,
+      lessonUrl,
+      downloadUrl: download.url(),
+      saveAs: (targetPath) => download.saveAs(targetPath),
+      onDuplicate: () => download.delete().catch(() => undefined),
+    },
+    state,
+    options,
+  );
+}
+
+async function settleDownloadWaiter(
+  promise: Promise<OpenCliDownloadResult>,
+): Promise<{ ok: true; value: OpenCliDownloadResult } | { ok: false; error: Error }> {
+  try {
+    return { ok: true, value: await promise };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err : new Error(String(err)) };
+  }
+}
+
+async function saveAndMaybeAnalyzeOpenCliDownload(
+  download: OpenCliDownloadResult,
+  lessonUrl: string | undefined,
+  state: CamblyImportState,
+  options: FetchOptions,
+): Promise<void> {
+  if (!download.downloaded || !download.filename) {
+    throw new Error(download.error ?? "OpenCLI did not report a completed download filename.");
+  }
+
+  const sourcePath = download.filename;
+  if (!existsSync(sourcePath)) {
+    throw new Error(`OpenCLI download file does not exist: ${sourcePath}`);
+  }
+
+  await saveAndMaybeAnalyzeFile(
+    {
+      suggestedFilename: basename(sourcePath),
+      lessonUrl,
+      downloadUrl: download.finalUrl ?? download.url ?? sourcePath,
+      saveAs: (targetPath) => copyFile(sourcePath, targetPath),
+    },
+    state,
+    options,
+  );
+}
+
+async function saveAndMaybeAnalyzeFile(
+  download: {
+    suggestedFilename: string;
+    lessonUrl?: string;
+    downloadUrl: string;
+    saveAs: (targetPath: string) => Promise<void>;
+    onDuplicate?: () => Promise<void>;
+  },
+  state: CamblyImportState,
+  options: FetchOptions,
+): Promise<void> {
+  const lessonId = buildLessonId(
+    download.lessonUrl,
+    download.suggestedFilename,
+    download.downloadUrl,
+  );
   const existing = state.lessons[lessonId];
 
   if (
@@ -211,19 +439,22 @@ async function saveAndMaybeAnalyzeDownload(
   ) {
     console.error(`[cambly] ${lessonId}: already downloaded; keeping existing video.`);
     if (options.analyze) await analyzeExistingLesson(lessonId, state, options);
-    await download.delete().catch(() => undefined);
+    await download.onDuplicate?.();
     return;
   }
 
-  const targetPath = join(CAMBLY_VIDEOS_DIR, `${lessonId}${safeExtension(suggestedFilename)}`);
-  console.error(`[cambly] ${lessonId}: saving ${suggestedFilename}`);
+  const targetPath = join(
+    CAMBLY_VIDEOS_DIR,
+    `${lessonId}${safeExtension(download.suggestedFilename)}`,
+  );
+  console.error(`[cambly] ${lessonId}: saving ${download.suggestedFilename}`);
   await download.saveAs(targetPath);
 
   state.lessons[lessonId] = {
     ...existing,
     provider: "cambly",
     lessonId,
-    lessonUrl,
+    lessonUrl: download.lessonUrl ?? existing?.lessonUrl,
     downloadedVideo: toCamblyStatePath(targetPath),
     status: "downloaded",
     updatedAt: new Date().toISOString(),
@@ -347,7 +578,7 @@ function safeName(value: string): string {
 }
 
 function parseLoginArgs(args: string[]): LoginOptions {
-  return { url: readUrlFlag(args) };
+  return { ...readBrowserFlags(args), url: readUrlFlag(args) };
 }
 
 function parseListArgs(args: string[]): ListOptions {
@@ -356,7 +587,7 @@ function parseListArgs(args: string[]): ListOptions {
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--limit") limit = parsePositiveInt(args[++i], "--limit");
   }
-  return { limit, url };
+  return { ...readBrowserFlags(args), limit, url };
 }
 
 function parseFetchArgs(args: string[]): FetchOptions {
@@ -367,6 +598,7 @@ function parseFetchArgs(args: string[]): FetchOptions {
   let forceDownload = false;
   let strict = false;
   let url = DEFAULT_CAMBLY_URL;
+  const browser = readBrowserFlags(args);
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -378,10 +610,17 @@ function parseFetchArgs(args: string[]): FetchOptions {
     else if (arg === "--strict") strict = true;
     else if (arg === "--url") urls.push(readRequiredValue(args[++i], "--url"));
     else if (arg === "--history-url") url = readRequiredValue(args[++i], "--history-url");
+    else if (arg === "--profile-dir") i += 1;
+    else if (arg === "--channel") i += 1;
+    else if (arg === "--cdp-url") i += 1;
+    else if (arg === "--opencli-session") i += 1;
+    else if (arg === "--opencli-bin") i += 1;
+    else if (arg === "--download-pattern") i += 1;
+    else if (arg === "--download-timeout") i += 1;
     else if (arg) throw new Error(`unknown cambly fetch option: ${arg}`);
   }
 
-  return { limit, analyze, forceAnalyze, forceDownload, strict, urls, url };
+  return { ...browser, limit, analyze, forceAnalyze, forceDownload, strict, urls, url };
 }
 
 function parseAnalyzeMissingArgs(args: string[]): FetchOptions {
@@ -399,6 +638,56 @@ function readUrlFlag(args: string[]): string {
   return url;
 }
 
+function readBrowserFlags(
+  args: string[],
+): Pick<
+  FetchOptions,
+  | "profileDir"
+  | "channel"
+  | "cdpUrl"
+  | "opencliSession"
+  | "opencliBin"
+  | "downloadPattern"
+  | "downloadTimeoutMs"
+> {
+  let profileDir = process.env.CAMBLY_PROFILE_DIR;
+  let channel = process.env.CAMBLY_BROWSER_CHANNEL;
+  let cdpUrl = process.env.CAMBLY_CDP_URL;
+  let opencliSession = process.env.CAMBLY_OPENCLI_SESSION;
+  let opencliBin = process.env.CAMBLY_OPENCLI_BIN;
+  let downloadPattern = process.env.CAMBLY_DOWNLOAD_PATTERN;
+  let downloadTimeoutMs = readOptionalPositiveInt(
+    process.env.CAMBLY_DOWNLOAD_TIMEOUT_MS,
+    "CAMBLY_DOWNLOAD_TIMEOUT_MS",
+  );
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--profile-dir") {
+      profileDir = readRequiredValue(args[++i], "--profile-dir");
+    } else if (args[i] === "--channel") {
+      channel = readRequiredValue(args[++i], "--channel");
+    } else if (args[i] === "--cdp-url") {
+      cdpUrl = readRequiredValue(args[++i], "--cdp-url");
+    } else if (args[i] === "--opencli-session") {
+      opencliSession = readRequiredValue(args[++i], "--opencli-session");
+    } else if (args[i] === "--opencli-bin") {
+      opencliBin = readRequiredValue(args[++i], "--opencli-bin");
+    } else if (args[i] === "--download-pattern") {
+      downloadPattern = readRequiredValue(args[++i], "--download-pattern");
+    } else if (args[i] === "--download-timeout") {
+      downloadTimeoutMs = parsePositiveInt(args[++i], "--download-timeout");
+    }
+  }
+  return {
+    profileDir,
+    channel,
+    cdpUrl,
+    opencliSession,
+    opencliBin,
+    downloadPattern,
+    downloadTimeoutMs,
+  };
+}
+
 function readRequiredValue(value: string | undefined, flag: string): string {
   if (!value) throw new Error(`${flag} requires a value`);
   return value;
@@ -410,6 +699,11 @@ function parsePositiveInt(value: string | undefined, flag: string): number {
     throw new Error(`${flag} must be a positive integer`);
   }
   return parsed;
+}
+
+function readOptionalPositiveInt(value: string | undefined, flag: string): number | undefined {
+  if (!value) return undefined;
+  return parsePositiveInt(value, flag);
 }
 
 async function waitForEnter(prompt: string): Promise<void> {
@@ -436,12 +730,19 @@ Fetch options:
   --limit N                            Capture up to N downloads (default: 10)
   --url <lesson-url>                   Open a lesson URL and try to click Download
   --history-url <url>                  Override the Cambly history start URL
+  --profile-dir <path>                 Use a specific browser user-data directory
+  --channel <name>                     Use a Playwright browser channel, e.g. chrome
+  --cdp-url <url>                      Connect to an existing remote-debugging Chrome
+  --opencli-session <name>             Use OpenCLI Browser Bridge with a normal Chrome session
+  --opencli-bin <path>                 OpenCLI executable path (default: opencli)
+  --download-pattern <text>            OpenCLI download filename/URL match (default: .mp4)
+  --download-timeout <ms>              OpenCLI per-download timeout (default: 120000)
   --force-download                     Save video even if the lesson was downloaded before
   --force-analyze                      Re-run analysis even when analysis already exists
   --strict                             Stop on the first analysis failure
 
 Data:
-  Browser profile: ~/.speaking-review/browser/cambly/
+  Browser profile: ~/.speaking-review/browser/cambly/ by default
   Download state:  ~/.speaking-review/imports/cambly/state.json
   Videos:          ~/.speaking-review/imports/cambly/videos/
 `);

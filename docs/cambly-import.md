@@ -29,6 +29,8 @@ Implemented:
 - `speaking-review cambly fetch --limit 10 --analyze`
 - `speaking-review cambly analyze-missing`
 - Persistent browser profile under `~/.speaking-review/browser/cambly/`
+- Optional Chrome DevTools Protocol attachment via `--cdp-url` / `CAMBLY_CDP_URL`
+- Optional OpenCLI Browser Bridge backend via `--opencli-session` / `CAMBLY_OPENCLI_SESSION`
 - Download state under `~/.speaking-review/imports/cambly/state.json`
 - Optional Cambly provider metadata on `ReviewMeta`
 
@@ -48,12 +50,77 @@ Still intentionally browser-assisted:
 
 Cambly's public help docs describe the normal manual path as opening the Progress tab, selecting a lesson in Lesson History, and using the Download button for the lesson video. The automation should mirror that user-visible flow instead of relying on private credentials or hard-coded tokens.
 
+## Browser Session Options
+
+By default, Cambly commands use a dedicated Playwright profile:
+
+```bash
+speaking-review cambly login
+speaking-review cambly fetch --limit 10 --no-analyze
+```
+
+That profile is stored at `~/.speaking-review/browser/cambly/`. It does not reuse the user's daily Chrome profile, but it also does not require closing Chrome.
+
+To reuse the user's normal logged-in Chrome without quitting it, use OpenCLI's Browser Bridge extension:
+
+```bash
+opencli doctor
+
+speaking-review cambly login --opencli-session cambly
+speaking-review cambly list --opencli-session cambly --limit 20
+speaking-review cambly fetch --opencli-session cambly --limit 10 --no-analyze
+```
+
+In this mode, `speaking-review` delegates browser actions to `opencli browser <session> ...`. The OpenCLI extension runs inside the existing Chrome profile, so Cambly sees the same logged-in session. `fetch` waits for Chrome download events and then copies the completed video file into `~/.speaking-review/imports/cambly/videos/`.
+
+Useful OpenCLI options:
+
+```bash
+speaking-review cambly fetch \
+  --opencli-session cambly \
+  --download-pattern .mp4 \
+  --download-timeout 180000 \
+  --limit 5 \
+  --analyze
+```
+
+To attach through Chrome DevTools Protocol, start a separate Chrome instance with remote debugging enabled:
+
+```bash
+open -na "Google Chrome" --args \
+  --remote-debugging-port=9222 \
+  --user-data-dir="$HOME/.speaking-review/browser/cambly-cdp"
+
+speaking-review cambly login --cdp-url http://127.0.0.1:9222
+speaking-review cambly fetch --cdp-url http://127.0.0.1:9222 --limit 10 --no-analyze
+```
+
+This does not require quitting the user's normal Chrome. It does require logging in once inside the debugging Chrome window, because it uses a separate profile directory.
+
+Reusing the normal Chrome profile is possible only when that profile is not already locked by a running Chrome process:
+
+```bash
+speaking-review cambly fetch \
+  --channel chrome \
+  --profile-dir "$HOME/Library/Application Support/Google/Chrome" \
+  --limit 10 \
+  --no-analyze
+```
+
+On macOS, this usually means Chrome must be fully quit first. A normal already-running Chrome cannot be attached to unless it was originally launched with `--remote-debugging-port`.
+
 ## Proposed CLI
 
 ```bash
 # Opens a persistent local browser profile for Cambly.
 # The user logs in manually once.
 speaking-review cambly login
+
+# Connects to a remote-debugging Chrome instance.
+speaking-review cambly login --cdp-url http://127.0.0.1:9222
+
+# Uses OpenCLI Browser Bridge to reuse a normal logged-in Chrome profile.
+speaking-review cambly login --opencli-session cambly
 
 # Lists discoverable lesson recordings without downloading.
 speaking-review cambly list --limit 20

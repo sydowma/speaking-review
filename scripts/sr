@@ -1,0 +1,261 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+DEFAULT_CAMBLY_HISTORY_URL="${CAMBLY_HISTORY_URL:-https://www.cambly.com/en/student/progress/past-lessons}"
+DEFAULT_OPENCLI_SESSION="${CAMBLY_OPENCLI_SESSION:-cambly}"
+DEFAULT_WHISPER_MODEL="${WHISPER_MODEL:-$HOME/whisper-models/ggml-large-v3.bin}"
+DEFAULT_WHISPER_MODEL_URL="${WHISPER_MODEL_URL:-https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin}"
+DEFAULTED_ARGS=()
+
+usage() {
+  cat <<'EOF'
+speaking-review helper
+
+Usage:
+  bash scripts/sr setup [--with-model]      Install local dependencies and optional Whisper model
+  bash scripts/sr doctor                    Check required tools and environment
+  bash scripts/sr model                     Download the default Whisper model
+  bash scripts/sr review <file>             Ingest one audio/video file
+  bash scripts/sr ui                        Start the local server and web UI
+  bash scripts/sr list                      List local reviews
+  bash scripts/sr cambly-login              Open Cambly through OpenCLI Browser Bridge
+  bash scripts/sr cambly-fetch [options]    Download Cambly videos, newest first
+  bash scripts/sr cambly-analyze [options]  Analyze downloaded Cambly videos
+  bash scripts/sr sync <id> --to <url>      Sync a review to a remote server
+
+Common Cambly options:
+  --limit N          Defaults to 1 in this wrapper
+  --analyze          Run analysis after download
+  --no-analyze       Download only; default in this wrapper
+
+Environment:
+  ANTHROPIC_API_KEY      Required for review/analyze flows
+  CAMBLY_OPENCLI_SESSION Defaults to "cambly"
+  CAMBLY_HISTORY_URL     Defaults to Cambly's past-lessons page
+  WHISPER_MODEL          Defaults to ~/whisper-models/ggml-large-v3.bin
+EOF
+}
+
+main() {
+  local command="${1:-help}"
+  if [[ $# -gt 0 ]]; then shift; fi
+
+  case "$command" in
+    help|--help|-h)
+      usage
+      ;;
+    setup)
+      setup "$@"
+      ;;
+    doctor)
+      doctor
+      ;;
+    model)
+      download_model
+      ;;
+    review|ingest)
+      require_args "$command" "$@"
+      exec_bun_cli ingest "$@"
+      ;;
+    ui|dev)
+      require_command bun
+      exec bun run dev
+      ;;
+    list)
+      exec_bun_script list "$@"
+      ;;
+    sync)
+      require_args "$command" "$@"
+      exec_bun_script sync "$@"
+      ;;
+    cambly-login)
+      with_default_opencli_args "$@"
+      exec_bun_cli cambly login "${DEFAULTED_ARGS[@]}"
+      ;;
+    cambly-fetch)
+      with_default_cambly_fetch_args "$@"
+      exec_bun_cli cambly fetch "${DEFAULTED_ARGS[@]}"
+      ;;
+    cambly-analyze)
+      with_default_opencli_args "$@"
+      exec_bun_cli cambly analyze-missing "${DEFAULTED_ARGS[@]}"
+      ;;
+    *)
+      echo "unknown helper command: $command" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+}
+
+setup() {
+  local with_model=0
+  for arg in "$@"; do
+    case "$arg" in
+      --with-model)
+        with_model=1
+        ;;
+      --no-model)
+        with_model=0
+        ;;
+      *)
+        echo "unknown setup option: $arg" >&2
+        exit 2
+        ;;
+    esac
+  done
+
+  install_homebrew_tools
+  require_command bun
+  bun install
+  bunx playwright install chromium
+
+  if [[ "$with_model" == "1" ]]; then
+    download_model
+  elif [[ ! -f "$DEFAULT_WHISPER_MODEL" ]]; then
+    echo "Whisper model not found: $DEFAULT_WHISPER_MODEL" >&2
+    echo "Run: bash scripts/sr model" >&2
+  fi
+}
+
+doctor() {
+  local failed=0
+
+  check_command bun || failed=1
+  check_command ffmpeg || failed=1
+  check_command whisper-cli || failed=1
+
+  if [[ -f "$DEFAULT_WHISPER_MODEL" ]]; then
+    echo "ok  whisper model: $DEFAULT_WHISPER_MODEL"
+  else
+    echo "miss whisper model: $DEFAULT_WHISPER_MODEL"
+    echo "     run: bash scripts/sr model"
+    failed=1
+  fi
+
+  if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+    echo "ok  ANTHROPIC_API_KEY is set"
+  else
+    echo "warn ANTHROPIC_API_KEY is not set; review/analyze commands will fail"
+  fi
+
+  if command -v opencli >/dev/null 2>&1; then
+    echo "ok  opencli: $(command -v opencli)"
+    if ! opencli doctor; then
+      echo "warn opencli doctor reported a problem"
+    fi
+  else
+    echo "warn opencli is not installed; Cambly normal-Chrome reuse will be unavailable"
+  fi
+
+  return "$failed"
+}
+
+download_model() {
+  if [[ -f "$DEFAULT_WHISPER_MODEL" ]]; then
+    echo "Whisper model already exists: $DEFAULT_WHISPER_MODEL"
+    return
+  fi
+
+  require_command curl
+  mkdir -p "$(dirname "$DEFAULT_WHISPER_MODEL")"
+  echo "Downloading Whisper model to $DEFAULT_WHISPER_MODEL"
+  curl -L --fail --continue-at - -o "$DEFAULT_WHISPER_MODEL" "$DEFAULT_WHISPER_MODEL_URL"
+}
+
+install_homebrew_tools() {
+  local missing=()
+  command -v bun >/dev/null 2>&1 || missing+=(bun)
+  command -v ffmpeg >/dev/null 2>&1 || missing+=(ffmpeg)
+  command -v whisper-cli >/dev/null 2>&1 || missing+=(whisper-cpp)
+
+  if [[ "${#missing[@]}" -eq 0 ]]; then
+    return
+  fi
+
+  if ! command -v brew >/dev/null 2>&1; then
+    echo "Missing tools: ${missing[*]}" >&2
+    echo "Install them manually, or install Homebrew and rerun setup." >&2
+    exit 1
+  fi
+
+  echo "Installing missing Homebrew packages: ${missing[*]}"
+  brew install "${missing[@]}"
+}
+
+exec_bun_cli() {
+  require_command bun
+  exec bun run --cwd cli src/index.ts "$@"
+}
+
+exec_bun_script() {
+  require_command bun
+  exec bun run "$@"
+}
+
+with_default_opencli_args() {
+  DEFAULTED_ARGS=("$@")
+  if ! has_flag "--opencli-session" "${DEFAULTED_ARGS[@]}"; then
+    DEFAULTED_ARGS+=(--opencli-session "$DEFAULT_OPENCLI_SESSION")
+  fi
+}
+
+with_default_cambly_fetch_args() {
+  DEFAULTED_ARGS=("$@")
+  if ! has_flag "--opencli-session" "${DEFAULTED_ARGS[@]}"; then
+    DEFAULTED_ARGS+=(--opencli-session "$DEFAULT_OPENCLI_SESSION")
+  fi
+  if ! has_flag "--history-url" "${DEFAULTED_ARGS[@]}"; then
+    DEFAULTED_ARGS+=(--history-url "$DEFAULT_CAMBLY_HISTORY_URL")
+  fi
+  if ! has_flag "--limit" "${DEFAULTED_ARGS[@]}"; then
+    DEFAULTED_ARGS+=(--limit 1)
+  fi
+  if ! has_flag "--analyze" "${DEFAULTED_ARGS[@]}" && ! has_flag "--no-analyze" "${DEFAULTED_ARGS[@]}"; then
+    DEFAULTED_ARGS+=(--no-analyze)
+  fi
+}
+
+has_flag() {
+  local flag="$1"
+  shift
+  for arg in "$@"; do
+    if [[ "$arg" == "$flag" || "$arg" == "$flag="* ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+check_command() {
+  local name="$1"
+  if command -v "$name" >/dev/null 2>&1; then
+    echo "ok  $name: $(command -v "$name")"
+    return 0
+  fi
+  echo "miss $name"
+  return 1
+}
+
+require_command() {
+  local name="$1"
+  if ! command -v "$name" >/dev/null 2>&1; then
+    echo "$name is required but was not found. Run: bash scripts/sr setup" >&2
+    exit 1
+  fi
+}
+
+require_args() {
+  local command="$1"
+  shift
+  if [[ "$#" -eq 0 ]]; then
+    echo "$command requires arguments" >&2
+    usage >&2
+    exit 2
+  fi
+}
+
+main "$@"

@@ -32,6 +32,15 @@
     "server"
   ],
   "scripts": {
+    "sr": "bash scripts/sr",
+    "setup": "bash scripts/sr setup",
+    "doctor": "bash scripts/sr doctor",
+    "model": "bash scripts/sr model",
+    "review": "bash scripts/sr review",
+    "ui": "bash scripts/sr ui",
+    "cambly:login": "bash scripts/sr cambly-login",
+    "cambly:fetch": "bash scripts/sr cambly-fetch",
+    "cambly:analyze": "bash scripts/sr cambly-analyze",
     "ingest": "bun run --cwd cli src/index.ts ingest",
     "list": "bun run --cwd cli src/index.ts list",
     "sync": "bun run --cwd cli src/index.ts sync",

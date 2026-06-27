@@ -46,24 +46,31 @@ It is designed for learners who want a private, local-first workflow for improvi
 ## Prerequisites
 
 ```bash
-brew install ffmpeg whisper-cpp bun
-# whisper model (one-time, ~3GB)
-mkdir -p ~/whisper-models
-curl -L -o ~/whisper-models/ggml-large-v3.bin \
-  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin
+bash scripts/sr setup --with-model
 export ANTHROPIC_API_KEY="your-anthropic-api-key"
 ```
+
+`setup --with-model` installs the local toolchain, runs `bun install`, installs Playwright Chromium, and downloads the default whisper.cpp model. Run `bash scripts/sr doctor` to check the machine before ingesting recordings.
 
 ## Local Usage
 
 ```bash
-bun install
-bun run ingest /path/to/recording.mp4   # ~3 min: ffmpeg + whisper + Claude
-bun run dev                              # starts server + web in parallel
+bash scripts/sr review /path/to/recording.mp4
+bash scripts/sr ui
 # open http://localhost:5173
 ```
 
 Reviews are stored at `~/.speaking-review/reviews/<uuid>/` (or `$SPEAKING_REVIEW_DATA` if set).
+
+Useful shortcuts:
+
+```bash
+bash scripts/sr list
+bash scripts/sr sync <review-id> --to https://your-server.example
+bun run doctor
+bun run review /path/to/recording.mp4
+bun run ui
+```
 
 ## Cambly Import
 
@@ -71,10 +78,7 @@ Speaking Review can import your own downloadable Cambly lesson recordings throug
 
 ```bash
 opencli doctor
-bun run --cwd cli src/index.ts cambly fetch \
-  --opencli-session cambly \
-  --limit 5 \
-  --no-analyze
+bash scripts/sr cambly-fetch --limit 5
 ```
 
 Add `--analyze` to run the normal whisper.cpp + Claude review pipeline after each download. Signed video URLs are kept in memory only; Cambly passwords and tokens are not stored by this project. See [`docs/cambly-import.md`](docs/cambly-import.md) for setup notes, CDP fallback, and troubleshooting.

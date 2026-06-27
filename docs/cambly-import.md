@@ -13,8 +13,8 @@ bun run ingest /path/to/recording.mp4
 into a browser-assisted import flow:
 
 ```bash
-speaking-review cambly login
-speaking-review cambly fetch --limit 10 --analyze
+bash scripts/sr cambly-login
+bash scripts/sr cambly-fetch --limit 10 --analyze
 ```
 
 The importer should download the user's own Cambly lesson recordings, save them outside the repository, and pass each video into the existing `ingest()` pipeline.
@@ -55,8 +55,8 @@ Cambly's public help docs describe the normal manual path as opening the Progres
 By default, Cambly commands use a dedicated Playwright profile:
 
 ```bash
-speaking-review cambly login
-speaking-review cambly fetch --limit 10 --no-analyze
+bun run --cwd cli src/index.ts cambly login
+bun run --cwd cli src/index.ts cambly fetch --limit 10 --no-analyze
 ```
 
 That profile is stored at `~/.speaking-review/browser/cambly/`. It does not reuse the user's daily Chrome profile, but it also does not require closing Chrome.
@@ -66,9 +66,9 @@ To reuse the user's normal logged-in Chrome without quitting it, use OpenCLI's B
 ```bash
 opencli doctor
 
-speaking-review cambly login --opencli-session cambly
-speaking-review cambly list --opencli-session cambly --limit 20
-speaking-review cambly fetch --opencli-session cambly --limit 10 --no-analyze
+bash scripts/sr cambly-login
+bun run --cwd cli src/index.ts cambly list --opencli-session cambly --limit 20
+bash scripts/sr cambly-fetch --limit 10
 ```
 
 In this mode, `speaking-review` delegates browser actions to `opencli browser <session> ...`. The OpenCLI extension runs inside the existing Chrome profile, so Cambly sees the same logged-in session. `fetch` runs an authenticated browser-side request against Cambly's chat-video API, keeps only entries with `hasVideoUrl`, sorts them by lesson time descending, opens the official `/api/chats/<id>/video` endpoint, resolves the playable video source, and saves it into `~/.speaking-review/imports/cambly/videos/`. If the API does not return downloadable candidates, the command falls back to the browser-assisted download capture flow. Signed video URLs are used only in memory and are not printed.
@@ -76,8 +76,7 @@ In this mode, `speaking-review` delegates browser actions to `opencli browser <s
 Useful OpenCLI options:
 
 ```bash
-speaking-review cambly fetch \
-  --opencli-session cambly \
+bash scripts/sr cambly-fetch \
   --download-pattern .mp4 \
   --download-timeout 180000 \
   --limit 5 \

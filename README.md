@@ -14,6 +14,7 @@ It is designed for learners who want a private, local-first workflow for improvi
 - **Speech-to-text transcription**: local whisper.cpp pipeline for turning practice recordings into timestamped transcript segments.
 - **Interactive review UI**: waveform playback, synchronized transcript, issue navigation, and correction cards.
 - **Targeted practice mode**: replay corrections with native browser text-to-speech and track review progress.
+- **Experimental Cambly import**: reuse an authenticated Chrome session to fetch downloadable Cambly lesson videos, newest first, then analyze them with the same pipeline.
 - **Local-first storage**: review data stays under `~/.speaking-review/reviews/<uuid>/` unless you configure a different data directory.
 - **Self-hosted sharing**: optional Bun server deployment for reviewing recordings across devices.
 
@@ -64,13 +65,23 @@ bun run dev                              # starts server + web in parallel
 
 Reviews are stored at `~/.speaking-review/reviews/<uuid>/` (or `$SPEAKING_REVIEW_DATA` if set).
 
+## Cambly Import
+
+Speaking Review can import your own downloadable Cambly lesson recordings through a browser-assisted workflow. The OpenCLI Browser Bridge path reuses your already logged-in Chrome session, asks Cambly for downloadable chat videos in newest-first order, resolves the official video endpoint, and saves videos outside the repository.
+
+```bash
+opencli doctor
+bun run --cwd cli src/index.ts cambly fetch \
+  --opencli-session cambly \
+  --limit 5 \
+  --no-analyze
+```
+
+Add `--analyze` to run the normal whisper.cpp + Claude review pipeline after each download. Signed video URLs are kept in memory only; Cambly passwords and tokens are not stored by this project. See [`docs/cambly-import.md`](docs/cambly-import.md) for setup notes, CDP fallback, and troubleshooting.
+
 ## Cross-Device Deployment
 
 See [`deploy/README.md`](deploy/README.md) for VPS deployment with Docker or systemd, Caddy reverse proxy, and `speaking-review sync` to push reviews from your Mac to the deployed server.
-
-## Roadmap
-
-- Experimental Cambly lesson-history import: see [`docs/cambly-import.md`](docs/cambly-import.md) for the browser-assisted downloader and automatic analysis workflow.
 
 ## Privacy Notes
 

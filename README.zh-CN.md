@@ -14,6 +14,7 @@ Speaking Review 是一个本地优先、可自托管的 AI 英语口语复盘工
 - **本地语音转文字**：通过 whisper.cpp 将练习录音转成带时间戳的 transcript。
 - **交互式复盘界面**：支持音频波形、同步文本、问题定位和纠错卡片。
 - **专项练习模式**：使用浏览器原生 TTS 播放修正句，并记录复习进度。
+- **实验性 Cambly 导入**：复用已登录的 Chrome 会话，按从新到旧抓取可下载的 Cambly 课程视频，并接入同一套分析流程。
 - **本地优先存储**：默认将 review 数据保存在 `~/.speaking-review/reviews/<uuid>/`。
 - **可自托管访问**：可以部署 Bun server，在手机、平板或其他设备上查看复盘结果。
 
@@ -64,15 +65,25 @@ bun run dev                              # 同时启动 server 和 web
 
 review 数据默认保存在 `~/.speaking-review/reviews/<uuid>/`。如果设置了 `$SPEAKING_REVIEW_DATA`，则使用该目录。
 
+## Cambly 导入
+
+Speaking Review 可以通过浏览器辅助流程导入你自己的 Cambly 课程录像。OpenCLI Browser Bridge 模式会复用你已经登录的 Chrome 会话，向 Cambly 请求可下载的视频列表，按课程时间从新到旧处理，解析官方视频端点，并把视频保存到仓库外部。
+
+```bash
+opencli doctor
+bun run --cwd cli src/index.ts cambly fetch \
+  --opencli-session cambly \
+  --limit 5 \
+  --no-analyze
+```
+
+加上 `--analyze` 后，会在下载完成后继续运行 whisper.cpp + Claude 复盘流程。签名视频 URL 只在内存中使用；本项目不会保存 Cambly 密码或 token。安装、CDP 备用方案和排障说明见 [`docs/cambly-import.md`](docs/cambly-import.md)。
+
 ## 跨设备部署
 
 如果希望在手机、平板或其他电脑上查看复盘结果，可以参考 [`deploy/README.md`](deploy/README.md)，使用 Docker 或 systemd 部署到 VPS，并通过 Caddy 做 HTTPS 反向代理。
 
 本地完成 ingest 后，可以用 `speaking-review sync` 将 review 上传到远端 server。
-
-## Roadmap
-
-- 实验性的 Cambly 历史课程导入：浏览器辅助下载和自动分析流程见 [`docs/cambly-import.md`](docs/cambly-import.md)。
 
 ## 隐私说明
 
